@@ -84,6 +84,38 @@ const SESSIONS=["Asia","London","New York"];
 const RESULTS=["Win","Loss","Break Even"];
 const CONCEPTS_DEFAULT=["Market Structure","BOS","CHoCH","Liquidity Sweep","Order Block","Fair Value Gap","Premium/Discount","OTE Entry"];
 
+/* ---------------- automatic P/L calculation ----------------
+   Estimates $ profit/loss from entry/exit price + lot size, using
+   standard contract sizes per instrument type. This is an approximation
+   (real broker contract specs & live conversion rates can differ slightly
+   for JPY-quoted crosses and USD-base pairs), but it's accurate for the
+   common majors and gives a solid starting number the user can still
+   edit by hand. */
+function contractSizeFor(pair){
+  const p=(pair||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+  if(p.includes("XAU")) return {type:"direct", size:100};      // Gold: 100 oz/lot
+  if(p.includes("XAG")) return {type:"direct", size:5000};     // Silver: 5000 oz/lot
+  if(p.includes("BTC")||p.includes("ETH")) return {type:"direct", size:1}; // crypto: 1 coin/lot
+  if(["NAS100","US30","SPX500","GER40","US100","US500","GER30"].includes(p)) return {type:"direct", size:1}; // index CFD: ~$1/point/lot
+  if(p.endsWith("USD")) return {type:"direct", size:100000};   // EURUSD, GBPUSD, AUDUSD, NZDUSD — quote=USD
+  if(p.startsWith("USD")) return {type:"divide", size:100000}; // USDJPY, USDCAD — base=USD, convert via exit price
+  if(p.endsWith("JPY")) return {type:"jpy", size:100000};      // EURJPY, GBPJPY — quote=JPY, rough JPY->USD approx
+  return {type:"direct", size:100000};                          // fallback: generic forex major
+}
+function calcAutoPnL(pair, direction, entry, exitPrice, lot){
+  entry=parseFloat(entry); exitPrice=parseFloat(exitPrice); lot=parseFloat(lot);
+  if(isNaN(entry)||isNaN(exitPrice)||isNaN(lot)||lot<=0) return null;
+  const dirMult = direction==="Sell" ? -1 : 1;
+  const diff = (exitPrice-entry)*dirMult;
+  const spec = contractSizeFor(pair);
+  let usd;
+  if(spec.type==="direct") usd = diff*spec.size*lot;
+  else if(spec.type==="divide") usd = (diff*spec.size*lot)/exitPrice;
+  else if(spec.type==="jpy") usd = (diff*spec.size*lot)/150; // approx JPY/USD rate, no live feed
+  else usd = diff*spec.size*lot;
+  return usd;
+}
+
 /* Full ICT / Smart Money Concepts term library, grouped by category.
    Users pick which terms they actually use from here (see "Terms" tab);
    selected terms become the checklist shown on the trade form. */
@@ -106,17 +138,260 @@ const ICT_LIBRARY = {
 const LS_CUSTOM_CONCEPTS="ictj_customconcepts";
 function loadCustomConcepts(){ try{return JSON.parse(localStorage.getItem(LS_CUSTOM_CONCEPTS)||"null");}catch{return null;} }
 function saveCustomConcepts(list){ localStorage.setItem(LS_CUSTOM_CONCEPTS, JSON.stringify(list)); }
-/* Returns the active checklist: user's chosen terms if they've saved any, otherwise the default 8. */
+/* Opt-in only: a brand new user sees NO ICT checklist on the trade form
+   until they go into Settings > ICT Terminlar and enable specific terms. */
 function getActiveConcepts(){
   const custom = loadCustomConcepts();
-  return (custom && custom.length) ? custom : CONCEPTS_DEFAULT;
+  return custom || [];
 }
 const CONCEPTS=CONCEPTS_DEFAULT;
+
+/* Extra mistake tags the person has typed in themselves (in addition to the built-in list). */
+const LS_CUSTOM_MISTAKES="ictj_custommistakes";
+function loadCustomMistakes(){ try{return JSON.parse(localStorage.getItem(LS_CUSTOM_MISTAKES)||"null");}catch{return null;} }
+function saveCustomMistakes(list){ localStorage.setItem(LS_CUSTOM_MISTAKES, JSON.stringify(list)); }
+function getActiveMistakes(){ const c=loadCustomMistakes(); return c || []; }
 const EMOTIONS=["Calm","Confident","Fearful","Greedy","FOMO","Revenge","Impatient","Neutral"];
 const MISTAKES=["Early Entry","Late Entry","Moved SL","Oversized","No Confirmation","FOMO Entry","Ignored Plan","Overtrading"];
+/* Bigger libraries offered in the Settings > Psychology picker. Nothing is
+   active by default — the person opts in from Settings. */
+const EMOTIONS_LIBRARY=["Calm","Confident","Fearful","Greedy","FOMO","Revenge","Impatient","Neutral","Excited","Anxious","Overconfident","Hesitant","Frustrated","Optimistic","Bored","Stressed","Disciplined","Impulsive"];
+const MISTAKES_LIBRARY=["Early Entry","Late Entry","Moved SL","Oversized","No Confirmation","FOMO Entry","Ignored Plan","Overtrading","Revenge Trading","No Stop Loss","Chased Price","Closed Too Early","Held Too Long","Traded News Event","Ignored Higher Timeframe","Wrong Session","Broke Risk Rule","Multiple Positions Same Direction","Didn't Journal","Traded While Tired"];
+const LS_ACTIVE_EMOTIONS="ictj_activeemotions";
+function loadActiveEmotions(){ try{return JSON.parse(localStorage.getItem(LS_ACTIVE_EMOTIONS)||"null");}catch{return null;} }
+function saveActiveEmotions(list){ localStorage.setItem(LS_ACTIVE_EMOTIONS, JSON.stringify(list)); }
+function getActiveEmotions(){ const c=loadActiveEmotions(); return c || []; }
+
+/* Whole optional sections (Notes / Screenshots) — off by default, toggled in Settings > Bo'limlar. */
+const LS_SHOW_NOTES="ictj_shownotes", LS_SHOW_SHOTS="ictj_showshots";
+function showNotes(){ return localStorage.getItem(LS_SHOW_NOTES)==="1"; }
+function setShowNotes(v){ localStorage.setItem(LS_SHOW_NOTES, v?"1":"0"); }
+function showShots(){ return localStorage.getItem(LS_SHOW_SHOTS)==="1"; }
+function setShowShots(v){ localStorage.setItem(LS_SHOW_SHOTS, v?"1":"0"); }
 const PHASES=["Phase 1","Phase 2","Funded"];
 const DOW=["Mo","Tu","We","Th","Fr","Sa","Su"];
 const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MONTHS_RU=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const MONTHS_UZ=["Yanvar","Fevral","Mart","Aprel","May","Iyun","Iyul","Avgust","Sentabr","Oktabr","Noyabr","Dekabr"];
+
+/* ---------------- language / i18n ---------------- */
+const LS_LANG="ictj_lang";
+function loadLang(){ return localStorage.getItem(LS_LANG) || "uz"; }
+function saveLang(l){ localStorage.setItem(LS_LANG, l); }
+
+const I18N = {
+  uz: {
+    nav_dashboard:"Dashboard", nav_journal:"Journal", nav_accounts:"Hisob", nav_terms:"Sozlamalar",
+    dash_title:"Dashboard", dash_sub:"Umumiy ko'rsatkichlar",
+    profit_curve:"Profit Curve", no_curve_data:"Savdolarni kiritsangiz, profit grafigi shu yerda chiqadi",
+    net_pl:"Net P/L", stat_trades:"Savdolar", stat_winrate:"Win Rate", stat_avgrr:"Avg R:R",
+    stat_pf:"Profit Factor", stat_maxdd:"Max DD", stat_wlbe:"W/L/BE",
+    best_session:"Best Session", best_setup:"Best Setup",
+    psych_insights:"Psychology Insights", avg_discipline:"Avg Discipline", top_mistake:"Top Mistake", none_logged:"Hali yo'q",
+    combo_title:"Kombinatsiya Tahlili", combo_sub:"Qaysi ICT kombinatsiyasi ko'p foyda yoki zarar keltirayotganini ko'ring. Bosib, o'sha savdolarni ko'ring.",
+    combo_empty:"ICT konseptlarini belgilab savdo qo'shsangiz, qaysi kombinatsiya foyda/zarar keltirayotgani shu yerda chiqadi",
+    combo_profitable:"Eng foydali", combo_losing:"Eng zararli", combo_notenough:"Hali yetarli ma'lumot yo'q",
+    combo_trades_wr:(n,w)=>`${n} savdo · ${w}% win rate`,
+    journal_title:"Journal", trades_logged:(n)=>`${n} ta savdo qayd etilgan`,
+    filter_all:"Barchasi", empty_none:"Hali savdo yo'q. + tugmasini bosib birinchi savdoni kiriting.", empty_filtered:"Bu filtrga mos savdo topilmadi.",
+    filter_sheet_title:"Savdolarni Filtrlash", all_pairs:"Barcha juftliklar", all_sessions:"Barcha sessiyalar", all_results:"Barcha natijalar", apply:"Qo'llash",
+    new_trade:"Yangi Savdo", edit_trade:"Savdoni Tahrirlash", back:"Orqaga", save:"Saqlash", cancel:"Bekor qilish",
+    sec_trade_details:"Savdo Ma'lumotlari", fld_pair:"Juftlik", fld_datetime:"Sana va Vaqt", fld_session:"Sessiya", fld_direction:"Yo'nalish", buy:"Buy", sell:"Sell",
+    sec_price_levels:"Narx Darajalari", fld_entry:"Entry", fld_sl:"Stop Loss", fld_tp:"Take Profit", fld_rr:"Risk:Reward",
+    fld_risk_pct:"Risk %", fld_lot:"Lot Size",
+    sec_outcome:"Natija", be:"BE", win:"Win", loss:"Loss", breakeven:"Break Even", fld_pnl:"P/L Summasi ($)",
+    sec_ict:"ICT / Smart Money Concepts", goto_terms:"O'z terminlaringizni sozlash →",
+    sec_psych:"Psixologiya", fld_emotion:"Savdodan Oldingi Kayfiyat", fld_discipline:"Intizom",
+    fld_mistakes:"Qilingan Xatolar", fld_lessons:"Olingan Saboqlar", ph_lessons:"Keyingi safar nima qilasiz?",
+    sec_notes:"Izohlar", ph_notes:"HTF bias, konfluensiya, ijro...",
+    sec_screenshots:"Skrinshotlar", before:"Oldin", after:"Keyin", upload:"Yuklash",
+    save_trade:"Savdoni Saqlash", update_trade:"Savdoni Yangilash",
+    detail_edit:"Tahrirlash", detail_delete:"O'chirish", ict_concepts:"ICT Konseptlar",
+    emotion:"Kayfiyat", discipline:"Intizom", mistakes:"Xatolar", lessons:"Olingan Saboqlar", notes:"Izohlar",
+    del_title:"Savdoni O'chirish", del_msg:"Bu amalni bekor qilib bo'lmaydi. Savdoni o'chirasizmi?", del_cancel:"Bekor qilish", del_confirm:"O'chirish",
+    acc_title:"Hisob", acc_sub_real:"Real savdo depozitingiz", acc_sub_prop:"Prop firm challenge / funded hisob",
+    acc_real:"Real Depozit", acc_prop:"Prop Firm",
+    fld_deposit:"Depozit summasi ($)", fld_broker:"Broker nomi (ixtiyoriy)",
+    real_account_label:"Real hisob", edit:"Tahrirlash", cur_balance:"Joriy Balans", since_start:"boshidan beri",
+    fld_acc_size:"Account Size ($)", fld_phase:"Challenge Phase", fld_daily_limit:"Daily Loss Limit (%)",
+    fld_max_dd:"Max Drawdown (%)", fld_profit_target:"Profit Target (%)", save_account:"Hisobni Saqlash",
+    target_progress:"Profit Target Progress", risk_limits:"Risk Limitlari", daily_loss_used:"Kunlik Loss Ishlatilgan",
+    dd_used:"Drawdown Ishlatilgan (%)", risk_breached:"⚠ Risk limiti buzildi",
+    terms_title:"ICT Terminlar", terms_sub:"Kerakli terminlarni tanlang — ular savdo shaklidagi checklist'ga chiqadi.",
+    select_all:"Hammasini tanlash", clear_all:"Tozalash", save_terms:(n)=>`Saqlash (${n} ta tanlangan)`, terms_saved:"Saqlandi! Endi savdo qo'shishda shu terminlar ko'rinadi.",
+    edit_balance_prompt_real:"Real hisobingiz depozitini o'zgartirish (kalendar % shundan hisoblanadi):",
+    edit_balance_prompt:"Hisob balansini kiriting (kunlik % hisoblash uchun):",
+    add_term:"+ Qo'shish", prompt_new_term:"Yangi ICT/SMC terminini kiriting:",
+    pnl_auto_hint:"avtomatik hisoblandi (TP/SL asosida) — kerak bo'lsa tahrirlang",
+    settings_ict:"ICT Terminlar", settings_psych:"Psixologiya", settings_gallery:"Galereya",
+    psych_emotions_title:"Kayfiyat variantlari", psych_emotions_sub:"Savdo qo'shishda ko'rinadigan kayfiyat variantlarini tanlang.",
+    psych_mistakes_title:"Xato turlari", psych_mistakes_sub:"Savdo qo'shishda ko'rinadigan xato turlarini tanlang.",
+    save_psych:"Saqlash", psych_saved:"Saqlandi!",
+    gallery_title:"Skrinshotlar Galereyasi", gallery_sub:"Barcha savdolaringizdagi rasmlar, sanaga qarab ketma-ket.",
+    gallery_empty:"Hali skrinshot yuklanmagan.", gallery_before:"OLDIN", gallery_after:"KEYIN",
+    goto_ict_hint:"yoqish uchun Sozlamalarga o'ting", goto_psych_hint:"yoqish uchun Sozlamalarga o'ting",
+    settings_sections:"Bo'limlar", sections_sub:"Kerak bo'lmagan bo'limlarni yashirib, formani soddalashtiring.",
+    sections_notes_label:"Izohlar bo'limi", sections_shots_label:"Skrinshotlar bo'limi",
+    on_label:"Yoqilgan", off_label:"O'chirilgan",
+    err_read_image:"Rasmni o'qib bo'lmadi.", err_enter_pair:"Juftlik nomini kiriting.", err_storage_full:"Saqlab bo'lmadi — xotira to'lib qolgan bo'lishi mumkin. Bir skrinshotni o'chirib ko'ring.",
+    days_short:"kun", streak_title:"Ketma-ketlik va Win Rate", streak_days:"Kunlar", streak_trades:"Savdolar",
+    avg_win_loss_title:"O'rtacha Win / Loss ($)",
+    zella_score_title:"Umumiy Baho", zella_your_score:"Sizning bahoyingiz",
+    zella_axis_winpct:"Win %", zella_axis_pf:"Profit Factor", zella_axis_avgwl:"Avg W/L", zella_axis_recovery:"Recovery", zella_axis_consistency:"Barqarorlik", zella_axis_maxdd:"Max DD",
+    import_btn:"Import CSV", import_no_data:"Fayl tanlanmagan.",
+    import_map_title:"Ustunlarni Moslashtirish", import_map_sub:(n)=>`${n} ta qator topildi. Har bir maydon qaysi ustunga mos kelishini tekshiring.`,
+    import_field_pair:"Juftlik", import_field_datetime:"Sana/Vaqt", import_field_direction:"Yo'nalish (Buy/Sell)",
+    import_field_entry:"Entry narxi", import_field_sl:"Stop Loss", import_field_tp:"Take Profit",
+    import_field_lot:"Lot", import_field_pnl:"P/L ($)", import_field_comment:"Izoh",
+    import_none:"— tanlanmagan —", import_preview:"Oldindan ko'rish",
+    import_confirm:(n)=>`${n} ta savdoni import qilish`,
+    import_success:(ok,skip)=>`${ok} ta savdo import qilindi. ${skip} ta o'tkazib yuborildi (takrorlanish yoki balans harakati).`,
+    add_mistake:"+ Qo'shish", prompt_new_mistake:"Yangi xato turini kiriting:",
+  },
+  ru: {
+    nav_dashboard:"Обзор", nav_journal:"Журнал", nav_accounts:"Счёт", nav_terms:"Настройки",
+    dash_title:"Обзор", dash_sub:"Общая статистика",
+    profit_curve:"Кривая прибыли", no_curve_data:"Добавьте сделки — здесь появится график прибыли",
+    net_pl:"Чистая П/У", stat_trades:"Сделки", stat_winrate:"Винрейт", stat_avgrr:"Ср. R:R",
+    stat_pf:"Profit Factor", stat_maxdd:"Макс. просадка", stat_wlbe:"П/У/БУ",
+    best_session:"Лучшая сессия", best_setup:"Лучший сетап",
+    psych_insights:"Психология", avg_discipline:"Ср. дисциплина", top_mistake:"Частая ошибка", none_logged:"Нет данных",
+    combo_title:"Анализ комбинаций", combo_sub:"Узнайте, какая комбинация ICT-концептов приносит больше прибыли или убытков. Нажмите, чтобы увидеть эти сделки.",
+    combo_empty:"Отмечайте ICT-концепты в сделках — здесь появится, какая комбинация приносит прибыль или убыток",
+    combo_profitable:"Самые прибыльные", combo_losing:"Самые убыточные", combo_notenough:"Пока недостаточно данных",
+    combo_trades_wr:(n,w)=>`${n} сделок · винрейт ${w}%`,
+    journal_title:"Журнал сделок", trades_logged:(n)=>`Записано сделок: ${n}`,
+    filter_all:"Все", empty_none:"Сделок пока нет. Нажмите +, чтобы добавить первую.", empty_filtered:"Нет сделок по этому фильтру.",
+    filter_sheet_title:"Фильтр сделок", all_pairs:"Все пары", all_sessions:"Все сессии", all_results:"Все результаты", apply:"Применить",
+    new_trade:"Новая сделка", edit_trade:"Редактировать сделку", back:"Назад", save:"Сохранить", cancel:"Отмена",
+    sec_trade_details:"Данные сделки", fld_pair:"Пара", fld_datetime:"Дата и время", fld_session:"Сессия", fld_direction:"Направление", buy:"Buy", sell:"Sell",
+    sec_price_levels:"Ценовые уровни", fld_entry:"Вход", fld_sl:"Стоп-лосс", fld_tp:"Тейк-профит", fld_rr:"Риск:Прибыль",
+    fld_risk_pct:"Риск %", fld_lot:"Объём (лот)",
+    sec_outcome:"Результат", be:"БУ", win:"Win", loss:"Loss", breakeven:"Break Even", fld_pnl:"Сумма П/У ($)",
+    sec_ict:"ICT / Smart Money Concepts", goto_terms:"Настроить свои термины →",
+    sec_psych:"Психология", fld_emotion:"Эмоция перед сделкой", fld_discipline:"Дисциплина",
+    fld_mistakes:"Допущенные ошибки", fld_lessons:"Извлечённые уроки", ph_lessons:"Что вы сделаете иначе в следующий раз?",
+    sec_notes:"Заметки", ph_notes:"HTF-предвзятость, конфлюенция, исполнение...",
+    sec_screenshots:"Скриншоты", before:"До", after:"После", upload:"Загрузить",
+    save_trade:"Сохранить сделку", update_trade:"Обновить сделку",
+    detail_edit:"Изменить", detail_delete:"Удалить", ict_concepts:"ICT-концепты",
+    emotion:"Эмоция", discipline:"Дисциплина", mistakes:"Ошибки", lessons:"Извлечённые уроки", notes:"Заметки",
+    del_title:"Удалить сделку", del_msg:"Это действие необратимо. Удалить сделку?", del_cancel:"Отмена", del_confirm:"Удалить",
+    acc_title:"Счёт", acc_sub_real:"Ваш реальный торговый депозит", acc_sub_prop:"Prop firm challenge / funded счёт",
+    acc_real:"Реальный депозит", acc_prop:"Prop Firm",
+    fld_deposit:"Сумма депозита ($)", fld_broker:"Название брокера (необязательно)",
+    real_account_label:"Реальный счёт", edit:"Изменить", cur_balance:"Текущий баланс", since_start:"с начала",
+    fld_acc_size:"Размер счёта ($)", fld_phase:"Этап челленджа", fld_daily_limit:"Дневной лимит убытка (%)",
+    fld_max_dd:"Макс. просадка (%)", fld_profit_target:"Цель по прибыли (%)", save_account:"Сохранить счёт",
+    target_progress:"Прогресс к цели", risk_limits:"Лимиты риска", daily_loss_used:"Использ. дневной лимит",
+    dd_used:"Использ. просадка (%)", risk_breached:"⚠ Лимит риска нарушен",
+    terms_title:"ICT-термины", terms_sub:"Выберите нужные термины — они появятся в чек-листе при добавлении сделки.",
+    select_all:"Выбрать все", clear_all:"Очистить", save_terms:(n)=>`Сохранить (выбрано ${n})`, terms_saved:"Сохранено! Теперь эти термины будут в чек-листе сделки.",
+    edit_balance_prompt_real:"Изменить депозит реального счёта (от него считаются % в календаре):",
+    edit_balance_prompt:"Введите баланс счёта (для расчёта дневного %):",
+    add_term:"+ Добавить", prompt_new_term:"Введите новый ICT/SMC термин:",
+    pnl_auto_hint:"рассчитано автоматически (по TP/SL) — при необходимости измените",
+    settings_ict:"ICT-термины", settings_psych:"Психология", settings_gallery:"Галерея",
+    psych_emotions_title:"Варианты эмоций", psych_emotions_sub:"Выберите варианты эмоций, которые будут показаны при добавлении сделки.",
+    psych_mistakes_title:"Типы ошибок", psych_mistakes_sub:"Выберите типы ошибок, которые будут показаны при добавлении сделки.",
+    save_psych:"Сохранить", psych_saved:"Сохранено!",
+    gallery_title:"Галерея скриншотов", gallery_sub:"Все изображения из ваших сделок, по порядку дат.",
+    gallery_empty:"Скриншотов пока нет.", gallery_before:"ДО", gallery_after:"ПОСЛЕ",
+    goto_ict_hint:"перейдите в Настройки, чтобы включить", goto_psych_hint:"перейдите в Настройки, чтобы включить",
+    settings_sections:"Разделы", sections_sub:"Скройте ненужные разделы, чтобы упростить форму.",
+    sections_notes_label:"Раздел заметок", sections_shots_label:"Раздел скриншотов",
+    on_label:"Включено", off_label:"Выключено",
+    err_read_image:"Не удалось прочитать изображение.", err_enter_pair:"Введите название пары.", err_storage_full:"Не удалось сохранить — возможно, хранилище переполнено. Попробуйте удалить один скриншот.",
+    days_short:"дн", streak_title:"Серия и винрейт", streak_days:"Дни", streak_trades:"Сделки",
+    avg_win_loss_title:"Средний Win / Loss ($)",
+    zella_score_title:"Общая оценка", zella_your_score:"Ваша оценка",
+    zella_axis_winpct:"Win %", zella_axis_pf:"Profit Factor", zella_axis_avgwl:"Avg W/L", zella_axis_recovery:"Recovery", zella_axis_consistency:"Стабильность", zella_axis_maxdd:"Max DD",
+    import_btn:"Импорт CSV", import_no_data:"Файл не выбран.",
+    import_map_title:"Сопоставление колонок", import_map_sub:(n)=>`Найдено строк: ${n}. Проверьте соответствие каждого поля колонке.`,
+    import_field_pair:"Пара", import_field_datetime:"Дата/время", import_field_direction:"Направление (Buy/Sell)",
+    import_field_entry:"Цена входа", import_field_sl:"Stop Loss", import_field_tp:"Take Profit",
+    import_field_lot:"Лот", import_field_pnl:"P/L ($)", import_field_comment:"Комментарий",
+    import_none:"— не выбрано —", import_preview:"Предпросмотр",
+    import_confirm:(n)=>`Импортировать ${n} сделок`,
+    import_success:(ok,skip)=>`Импортировано сделок: ${ok}. Пропущено: ${skip} (дубликаты или операции с балансом).`,
+    add_mistake:"+ Добавить", prompt_new_mistake:"Введите новый тип ошибки:",
+  },
+  en: {
+    nav_dashboard:"Dashboard", nav_journal:"Journal", nav_accounts:"Accounts", nav_terms:"Settings",
+    dash_title:"Dashboard", dash_sub:"Performance overview",
+    profit_curve:"Profit Curve", no_curve_data:"Log trades to see your profit curve here",
+    net_pl:"Net P/L", stat_trades:"Trades", stat_winrate:"Win Rate", stat_avgrr:"Avg R:R",
+    stat_pf:"Profit Factor", stat_maxdd:"Max DD", stat_wlbe:"W/L/BE",
+    best_session:"Best Session", best_setup:"Best Setup",
+    psych_insights:"Psychology Insights", avg_discipline:"Avg Discipline", top_mistake:"Top Mistake", none_logged:"None logged",
+    combo_title:"Combination Analysis", combo_sub:"See which ICT concept combinations bring the most profit or loss. Tap one to see those trades.",
+    combo_empty:"Tag ICT concepts on your trades to see which combinations are profitable or costly",
+    combo_profitable:"Most Profitable", combo_losing:"Most Costly", combo_notenough:"Not enough data yet",
+    combo_trades_wr:(n,w)=>`${n} trades · ${w}% win rate`,
+    journal_title:"Journal", trades_logged:(n)=>`${n} trades logged`,
+    filter_all:"All", empty_none:"No trades yet. Tap + to log your first trade.", empty_filtered:"No trades match this filter.",
+    filter_sheet_title:"Filter Trades", all_pairs:"All Pairs", all_sessions:"All Sessions", all_results:"All Results", apply:"Apply",
+    new_trade:"New Trade", edit_trade:"Edit Trade", back:"Back", save:"Save", cancel:"Cancel",
+    sec_trade_details:"Trade Details", fld_pair:"Pair", fld_datetime:"Date & Time", fld_session:"Session", fld_direction:"Direction", buy:"Buy", sell:"Sell",
+    sec_price_levels:"Price Levels", fld_entry:"Entry Price", fld_sl:"Stop Loss", fld_tp:"Take Profit", fld_rr:"Risk:Reward",
+    fld_risk_pct:"Risk %", fld_lot:"Lot Size",
+    sec_outcome:"Outcome", be:"BE", win:"Win", loss:"Loss", breakeven:"Break Even", fld_pnl:"Profit / Loss Amount",
+    sec_ict:"ICT / Smart Money Concepts", goto_terms:"Customize your terms →",
+    sec_psych:"Psychology", fld_emotion:"Emotion Before Trade", fld_discipline:"Discipline",
+    fld_mistakes:"Mistakes Made", fld_lessons:"Lessons Learned", ph_lessons:"What will you do differently?",
+    sec_notes:"Notes", ph_notes:"HTF bias, confluence, execution...",
+    sec_screenshots:"Screenshots", before:"Before", after:"After", upload:"Upload",
+    save_trade:"Save Trade", update_trade:"Update Trade",
+    detail_edit:"Edit", detail_delete:"Delete", ict_concepts:"ICT Concepts",
+    emotion:"Emotion", discipline:"Discipline", mistakes:"Mistakes", lessons:"Lessons Learned", notes:"Notes",
+    del_title:"Delete Trade", del_msg:"This action cannot be undone. Delete this trade?", del_cancel:"Cancel", del_confirm:"Delete",
+    acc_title:"Accounts", acc_sub_real:"Your real trading deposit", acc_sub_prop:"Prop firm challenge / funded account",
+    acc_real:"Real Deposit", acc_prop:"Prop Firm",
+    fld_deposit:"Deposit Amount ($)", fld_broker:"Broker Name (optional)",
+    real_account_label:"Real Account", edit:"Edit", cur_balance:"Current Balance", since_start:"since start",
+    fld_acc_size:"Account Size ($)", fld_phase:"Challenge Phase", fld_daily_limit:"Daily Loss Limit (%)",
+    fld_max_dd:"Max Drawdown (%)", fld_profit_target:"Profit Target (%)", save_account:"Save Account",
+    target_progress:"Profit Target Progress", risk_limits:"Risk Limits", daily_loss_used:"Daily Loss Used",
+    dd_used:"Drawdown Used (%)", risk_breached:"⚠ Risk limit breached",
+    terms_title:"ICT Terms", terms_sub:"Select the terms you use — they'll appear in the checklist when logging a trade.",
+    select_all:"Select All", clear_all:"Clear", save_terms:(n)=>`Save (${n} selected)`, terms_saved:"Saved! These terms will now show up when logging a trade.",
+    edit_balance_prompt_real:"Edit your real account deposit (calendar % is based on this):",
+    edit_balance_prompt:"Set your account balance (used for daily % calculation):",
+    add_term:"+ Add", prompt_new_term:"Enter a new ICT/SMC term:",
+    pnl_auto_hint:"auto-calculated (based on TP/SL) — edit if needed",
+    settings_ict:"ICT Terms", settings_psych:"Psychology", settings_gallery:"Gallery",
+    psych_emotions_title:"Emotion Options", psych_emotions_sub:"Choose which emotion options show up when logging a trade.",
+    psych_mistakes_title:"Mistake Types", psych_mistakes_sub:"Choose which mistake types show up when logging a trade.",
+    save_psych:"Save", psych_saved:"Saved!",
+    gallery_title:"Screenshot Gallery", gallery_sub:"All images from your trades, in date order.",
+    gallery_empty:"No screenshots uploaded yet.", gallery_before:"BEFORE", gallery_after:"AFTER",
+    goto_ict_hint:"go to Settings to enable", goto_psych_hint:"go to Settings to enable",
+    settings_sections:"Sections", sections_sub:"Hide sections you don't need to keep the form simple.",
+    sections_notes_label:"Notes section", sections_shots_label:"Screenshots section",
+    on_label:"On", off_label:"Off",
+    err_read_image:"Couldn't read that image.", err_enter_pair:"Enter a pair symbol.", err_storage_full:"Couldn't save — storage might be full. Try removing a screenshot.",
+    days_short:"d", streak_title:"Streak & Win Rate", streak_days:"Days", streak_trades:"Trades",
+    avg_win_loss_title:"Avg Win / Loss ($)",
+    zella_score_title:"Overall Score", zella_your_score:"Your score",
+    zella_axis_winpct:"Win %", zella_axis_pf:"Profit Factor", zella_axis_avgwl:"Avg W/L", zella_axis_recovery:"Recovery", zella_axis_consistency:"Consistency", zella_axis_maxdd:"Max DD",
+    import_btn:"Import CSV", import_no_data:"No file selected.",
+    import_map_title:"Map Columns", import_map_sub:(n)=>`Found ${n} rows. Check that each field matches the right column.`,
+    import_field_pair:"Pair", import_field_datetime:"Date/Time", import_field_direction:"Direction (Buy/Sell)",
+    import_field_entry:"Entry Price", import_field_sl:"Stop Loss", import_field_tp:"Take Profit",
+    import_field_lot:"Lot", import_field_pnl:"P/L ($)", import_field_comment:"Comment",
+    import_none:"— not selected —", import_preview:"Preview",
+    import_confirm:(n)=>`Import ${n} trades`,
+    import_success:(ok,skip)=>`Imported ${ok} trades. Skipped ${skip} (duplicates or balance operations).`,
+    add_mistake:"+ Add", prompt_new_mistake:"Enter a new mistake type:",
+  },
+};
+function t(key){
+  const lang = state && state.lang ? state.lang : "uz";
+  const dict = I18N[lang] || I18N.uz;
+  const val = dict[key] !== undefined ? dict[key] : I18N.uz[key];
+  return val !== undefined ? val : key;
+}
+const t2 = t;
 
 /* ---------------- storage ---------------- */
 const LS_TRADES="ictj_trades", LS_PROP="ictj_prop", LS_BAL="ictj_balance";
@@ -132,6 +407,7 @@ let state = {
   trades: loadTrades(),
   prop: loadProp(),
   balance: loadBalance(),
+  lang: loadLang(),
   tab: "dashboard",
   view: "list",
   activeId: null,
@@ -149,6 +425,89 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 function fmtMoney(n){ n=Number(n)||0; const s="$"+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); return (n>=0?"+":"-")+s; }
 function esc(s){ return (s||"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+/* ---------------- CSV / MT5 import ----------------
+   Parses a generic CSV export (from MT5's History > Report > Save as CSV,
+   or any broker's trade-history export) into rows + headers. Delimiter is
+   auto-detected (comma / semicolon / tab), and quoted fields are handled. */
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, ""); // strip BOM if present
+  const firstLine = text.split(/\r?\n/)[0] || "";
+  const counts = { ",": (firstLine.match(/,/g)||[]).length, ";": (firstLine.match(/;/g)||[]).length, "\t": (firstLine.match(/\t/g)||[]).length };
+  const delim = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+
+  const rows=[]; let row=[]; let field=""; let inQuotes=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i], next=text[i+1];
+    if(inQuotes){
+      if(c==='"' && next==='"'){ field+='"'; i++; }
+      else if(c==='"'){ inQuotes=false; }
+      else field+=c;
+    } else {
+      if(c==='"') inQuotes=true;
+      else if(c===delim){ row.push(field); field=""; }
+      else if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=""; }
+      else if(c==='\r'){ /* skip, \n handles the break */ }
+      else field+=c;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  const nonEmpty = rows.filter(r=>r.some(c=>c.trim()!==""));
+  if(nonEmpty.length===0) return {headers:[], rows:[]};
+  const headers = nonEmpty[0].map(h=>h.trim());
+  const dataRows = nonEmpty.slice(1).filter(r=>r.length>=Math.min(3,headers.length));
+  return {headers, rows:dataRows};
+}
+
+/* Best-guess column mapping based on common MT5 / broker export header names
+   (English + Russian, since MT5 can be run in either locale). */
+const MT5_FIELD_HINTS = {
+  pair:    ["symbol","символ","pair","instrument"],
+  datetime:["time","время","open time","time open","open"],
+  direction:["type","тип","direction","action"],
+  entry:   ["price","цена","open price","price open"],
+  sl:      ["s/l","sl","stop loss","стоп лосс"],
+  tp:      ["t/p","tp","take profit","тейк профит"],
+  lot:     ["volume","объем","объём","lots","lot","size"],
+  pnl:     ["profit","прибыль","net profit"],
+  commission:["commission","комиссия"],
+  swap:    ["swap","своп"],
+  comment: ["comment","комментарий"],
+};
+function guessColumn(headers, hints){
+  const norm=(s)=>s.toLowerCase().replace(/\s+/g,"");
+  const lower = headers.map(norm);
+  const normHints = hints.map(norm);
+  for(const hint of normHints){
+    const idx = lower.findIndex(h=>h===hint);
+    if(idx!==-1) return idx;
+  }
+  for(const hint of normHints){
+    const idx = lower.findIndex(h=>h.includes(hint));
+    if(idx!==-1) return idx;
+  }
+  return -1;
+}
+function autoMapMT5(headers){
+  const map={};
+  for(const key in MT5_FIELD_HINTS) map[key]=guessColumn(headers, MT5_FIELD_HINTS[key]);
+  return map;
+}
+/* MT5 typically formats dates as "2024.06.05 14:23:10" — normalize to
+   a value the datetime-local input / Date parser will accept. */
+function parseMT5Date(raw){
+  if(!raw) return null;
+  let s = raw.trim();
+  let m = s.match(/^(\d{4})[.\-](\d{2})[.\-](\d{2})[ T](\d{2}):(\d{2})(:(\d{2}))?/);
+  if(m) return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +(m[7]||0));
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function sessionForHour(hour){
+  if(hour>=0 && hour<8) return "Asia";
+  if(hour>=8 && hour<13) return "London";
+  return "New York";
+}
+
 /* ---------------- analytics ---------------- */
 function computeStats(){
   const closed = state.trades.filter(t=>t.result);
@@ -160,22 +519,78 @@ function computeStats(){
   const grossProfit = wins.reduce((s,t)=>s+(Number(t.pnl)||0),0);
   const grossLoss = Math.abs(losses.reduce((s,t)=>s+(Number(t.pnl)||0),0));
   const profitFactor = grossLoss>0? grossProfit/grossLoss : (grossProfit>0? Infinity : 0);
+  const avgWin = wins.length ? grossProfit/wins.length : 0;
+  const avgLoss = losses.length ? grossLoss/losses.length : 0;
   const sorted=[...closed].sort((a,b)=>new Date(a.datetime)-new Date(b.datetime));
-  let equity=getBaseBalance(), peak=equity, maxDD=0;
-  sorted.forEach(t=>{ equity+=Number(t.pnl)||0; peak=Math.max(peak,equity); maxDD=Math.max(maxDD, peak>0?((peak-equity)/peak)*100:0); });
+  let equity=getBaseBalance(), peak=equity, maxDD=0, maxDDAmount=0;
+  sorted.forEach(t=>{ equity+=Number(t.pnl)||0; peak=Math.max(peak,equity); const ddAmt=peak-equity; if(ddAmt>maxDDAmount) maxDDAmount=ddAmt; maxDD=Math.max(maxDD, peak>0?(ddAmt/peak)*100:0); });
   const bySession={}; SESSIONS.forEach(s=>bySession[s]={pnl:0,count:0});
   closed.forEach(t=>{ if(bySession[t.session]){bySession[t.session].pnl+=Number(t.pnl)||0; bySession[t.session].count++;} });
   const bestSession = Object.entries(bySession).filter(e=>e[1].count>0).sort((a,b)=>b[1].pnl-a[1].pnl)[0];
-  const bySetup={}; CONCEPTS.forEach(c=>bySetup[c]={pnl:0,count:0});
-  closed.forEach(t=>(t.concepts||[]).forEach(c=>{ if(bySetup[c]){bySetup[c].pnl+=Number(t.pnl)||0; bySetup[c].count++;} }));
+  const bySetup={};
+  closed.forEach(t=>(t.concepts||[]).forEach(c=>{
+    if(!bySetup[c]) bySetup[c]={pnl:0,count:0};
+    bySetup[c].pnl+=Number(t.pnl)||0; bySetup[c].count++;
+  }));
   const bestSetup = Object.entries(bySetup).filter(e=>e[1].count>0).sort((a,b)=>b[1].pnl-a[1].pnl)[0];
   const disciplineVals = closed.map(t=>Number(t.disciplineScore)).filter(n=>!isNaN(n)&&n>0);
   const avgDiscipline = disciplineVals.length? disciplineVals.reduce((a,b)=>a+b,0)/disciplineVals.length : 0;
   const mistakeCounts={}; closed.forEach(t=>(t.mistakes||[]).forEach(m=>mistakeCounts[m]=(mistakeCounts[m]||0)+1));
   const topMistake = Object.entries(mistakeCounts).sort((a,b)=>b[1]-a[1])[0];
   const netPnl = closed.reduce((s,t)=>s+(Number(t.pnl)||0),0);
+  const recoveryFactor = maxDDAmount>0 ? netPnl/maxDDAmount : (netPnl>0 ? 10 : 0);
+
+  // daily P&L map, used for consistency score, day-streak, and weekly calendar rollups
+  const dailyMap=new Map();
+  sorted.forEach(t=>{
+    const key=new Date(t.datetime).toDateString();
+    dailyMap.set(key, (dailyMap.get(key)||0) + (Number(t.pnl)||0));
+  });
+  const dailyEntries=[...dailyMap.entries()].sort((a,b)=>new Date(a[0])-new Date(b[0]));
+  const maxSingleDay = dailyEntries.length ? Math.max(...dailyEntries.map(e=>e[1])) : 0;
+  const consistency = (netPnl>0 && maxSingleDay>0) ? Math.max(0, Math.min(100, (1-(maxSingleDay/netPnl))*100)) : (netPnl>0?100:0);
+
+  // streaks — consecutive trades / consecutive trading days with the same win-or-loss direction
+  let tradeStreak={type:null, count:0};
+  if(closed.length){
+    const byTime=[...closed].sort((a,b)=>new Date(b.datetime)-new Date(a.datetime));
+    const lastType = byTime[0].result==="Win" ? "win" : byTime[0].result==="Loss" ? "loss" : null;
+    if(lastType){
+      let c=0;
+      for(const tr of byTime){
+        const ty = tr.result==="Win"?"win":tr.result==="Loss"?"loss":null;
+        if(ty===lastType) c++; else break;
+      }
+      tradeStreak={type:lastType, count:c};
+    }
+  }
+  let dayStreak={type:null, count:0};
+  if(dailyEntries.length){
+    const byDayDesc=[...dailyEntries].sort((a,b)=>new Date(b[0])-new Date(a[0]));
+    const lastType = byDayDesc[0][1]>0 ? "win" : byDayDesc[0][1]<0 ? "loss" : null;
+    if(lastType){
+      let c=0;
+      for(const [,pnl] of byDayDesc){
+        const ty = pnl>0?"win":pnl<0?"loss":null;
+        if(ty===lastType) c++; else break;
+      }
+      dayStreak={type:lastType, count:c};
+    }
+  }
+
+  // Zella-style composite score: six sub-scores (0-100) averaged into one overall number.
+  const scoreWinPct = winRate;
+  const scoreAvgWL = avgLoss>0 ? Math.min(100, (avgWin/avgLoss)*33.3) : (avgWin>0?100:0);
+  const scorePF = profitFactor===Infinity ? 100 : Math.min(100, profitFactor*33.3);
+  const scoreMaxDD = Math.max(0, 100 - Math.min(100, maxDD*2));
+  const scoreRecovery = Math.min(100, Math.max(0, recoveryFactor*20));
+  const scoreConsistency = consistency;
+  const zellaScore = closed.length ? (scoreWinPct+scoreAvgWL+scorePF+scoreMaxDD+scoreRecovery+scoreConsistency)/6 : 0;
+  const zellaBreakdown = {winPct:scoreWinPct, avgWL:scoreAvgWL, pf:scorePF, maxDD:scoreMaxDD, recovery:scoreRecovery, consistency:scoreConsistency};
+
   return {total:state.trades.length, wins:wins.length, losses:losses.length, be:closed.length-wins.length-losses.length,
-    winRate, avgRR, profitFactor, maxDD, bestSession, bestSetup, avgDiscipline, topMistake, netPnl};
+    winRate, avgRR, profitFactor, maxDD, maxDDAmount, avgWin, avgLoss, bestSession, bestSetup, avgDiscipline, topMistake, netPnl,
+    recoveryFactor, consistency, tradeStreak, dayStreak, zellaScore, zellaBreakdown, dailyMap};
 }
 /* ---- ICT combination analytics ----
    Groups closed trades by the exact set of ICT concepts they used
@@ -239,6 +654,7 @@ function compressImage(file, maxWidth=900, quality=0.6){
 
 /* ---------------- icons ---------------- */
 const ICONS = {
+  upload:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
   dash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
   book:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
   book2:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 7c-1.5-1.5-3.5-2-6-2v14c2.5 0 4.5.5 6 2 1.5-1.5 3.5-2 6-2V5c-2.5 0-4.5.5-6 2z"/><path d="M12 7v14"/></svg>',
@@ -259,26 +675,48 @@ function render(){
   let mainHtml = "";
   if(state.view==="form"){ mainHtml = renderForm(); }
   else if(state.view==="detail"){ mainHtml = renderDetail(); }
+  else if(state.view==="import"){ mainHtml = renderImportScreen(); }
   else if(state.tab==="dashboard"){ mainHtml = renderDashboard(); }
   else if(state.tab==="journal"){ mainHtml = renderJournal(); }
   else if(state.tab==="accounts"){ mainHtml = renderAccounts(); }
   else if(state.tab==="terms"){ mainHtml = renderTerms(); }
-  el.innerHTML = mainHtml + renderNav();
+  el.innerHTML = renderLangSwitcher() + mainHtml + renderNav();
   attachGlobalHandlers();
   if(state.view==="form") afterFormRender();
 }
 
+/* ---- language switcher (always visible) ---- */
+function renderLangSwitcher(){
+  const langs = [["uz","UZ"],["ru","RU"],["en","EN"]];
+  return `<div style="display:flex; justify-content:flex-end; gap:5px; margin-bottom:10px;">
+    ${langs.map(([code,label])=>`<button type="button" data-lang="${code}" style="background:${state.lang===code?'var(--gold)':'var(--surface2)'}; color:${state.lang===code?'var(--bg)':'var(--text-mid)'}; border:1px solid ${state.lang===code?'var(--gold)':'var(--border-l)'}; border-radius:6px; padding:4px 9px; font-size:10.5px; font-family:'SF Mono',monospace; font-weight:600;">${label}</button>`).join("")}
+  </div>`;
+}
+
 /* ---- calendar ---- */
+function dailyPnl(dateObj){
+  const trades = state.trades.filter(t=>t.result && new Date(t.datetime).toDateString()===dateObj.toDateString());
+  if(!trades.length) return null;
+  return trades.reduce((s,t)=>s+(Number(t.pnl)||0),0);
+}
 function renderCalendar(){
   const d = state.calMonth;
   const year=d.getFullYear(), month=d.getMonth();
   const firstDow = (new Date(year,month,1).getDay()+6)%7;
   const daysInMonth = new Date(year,month+1,0).getDate();
   const todayStr = new Date().toDateString();
-  let cells="";
-  for(let i=0;i<firstDow;i++) cells+='<div class="cal-day empty"></div>';
-  for(let day=1; day<=daysInMonth; day++){
-    const dateObj = new Date(year,month,day);
+
+  // build a flat list of cells (null = empty leading/trailing slot), then chunk into weeks of 7
+  const flatCells=[];
+  for(let i=0;i<firstDow;i++) flatCells.push(null);
+  for(let day=1; day<=daysInMonth; day++) flatCells.push(new Date(year,month,day));
+  while(flatCells.length%7!==0) flatCells.push(null);
+
+  const weeks=[];
+  for(let i=0;i<flatCells.length;i+=7) weeks.push(flatCells.slice(i,i+7));
+
+  const dayCellHtml=(dateObj)=>{
+    if(!dateObj) return '<div class="cal-day empty"></div>';
     const pct = dayPct(dateObj);
     let bg="transparent", fg="var(--text-faint)", pctTxt="";
     if(pct!==null){
@@ -288,21 +726,49 @@ function renderCalendar(){
       pctTxt = (pct>=0?"+":"")+pct.toFixed(1)+"%";
     }
     const isToday = dateObj.toDateString()===todayStr ? "today":"";
-    cells += `<div class="cal-day ${isToday}" style="background:${bg}" data-caldate="${dateObj.toISOString()}">
-      <span class="dnum" style="color:${pct!==null?fg:'var(--text-faint)'}">${day}</span>
+    return `<div class="cal-day ${isToday}" style="background:${bg}" data-caldate="${dateObj.toISOString()}">
+      <span class="dnum" style="color:${pct!==null?fg:'var(--text-faint)'}">${dateObj.getDate()}</span>
       ${pctTxt?`<span class="dpct" style="color:${fg}">${pctTxt}</span>`:""}
     </div>`;
-  }
+  };
+
+  const weekRows = weeks.map((week,wi)=>{
+    let weekTotal=0, weekDays=0;
+    week.forEach(dateObj=>{
+      if(!dateObj) return;
+      const p=dailyPnl(dateObj);
+      if(p!==null){ weekTotal+=p; weekDays++; }
+    });
+    const weekColor = weekDays===0 ? "var(--text-faint)" : weekTotal>=0 ? "var(--green)" : "var(--red)";
+    const dayCells = week.map(dayCellHtml).join("");
+    return `<div style="display:grid; grid-template-columns:repeat(7,1fr) 0.85fr; gap:4px; margin-bottom:4px;">
+      ${dayCells}
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--surface2); border-radius:7px; padding:2px;">
+        <div class="mono" style="font-size:9px; font-weight:700; color:${weekColor};">${weekDays===0?'—':fmtCompactMoney(weekTotal)}</div>
+        <div style="font-size:7px; color:var(--text-faint); margin-top:1px;">${weekDays} ${t("days_short")}</div>
+      </div>
+    </div>`;
+  }).join("");
+
   return `
   <div class="card" style="margin-bottom:14px;">
     <div class="cal-head">
       <button class="cal-nav" data-calnav="-1">${ICONS.back}</button>
-      <div class="disp" style="font-weight:600; font-size:14px;">${MONTHS[month]} ${year}</div>
+      <div class="disp" style="font-weight:600; font-size:14px;">${(state.lang==="ru"?MONTHS_RU:state.lang==="uz"?MONTHS_UZ:MONTHS)[month]} ${year}</div>
       <button class="cal-nav" data-calnav="1" style="transform:scaleX(-1);">${ICONS.back}</button>
     </div>
-    <div class="cal-grid" style="margin-bottom:4px;">${DOW.map(d=>`<div class="cal-dow">${d}</div>`).join("")}</div>
-    <div class="cal-grid">${cells}</div>
+    <div style="display:grid; grid-template-columns:repeat(7,1fr) 0.85fr; gap:4px; margin-bottom:6px;">
+      ${DOW.map(d=>`<div class="cal-dow">${d}</div>`).join("")}
+      <div class="cal-dow"></div>
+    </div>
+    ${weekRows}
   </div>`;
+}
+function fmtCompactMoney(n){
+  const abs=Math.abs(n);
+  const sign=n<0?"-":"";
+  if(abs>=1000) return sign+"$"+(abs/1000).toFixed(abs>=10000?0:1)+"K";
+  return sign+"$"+abs.toFixed(0);
 }
 
 /* ---- equity / profit chart ---- */
@@ -310,8 +776,8 @@ function renderEquityChart(){
   const closed = state.trades.filter(t=>t.result).slice().sort((a,b)=>new Date(a.datetime)-new Date(b.datetime));
   if(closed.length===0){
     return `<div class="card" style="margin-bottom:14px;">
-      <div class="section-lbl">Profit Curve</div>
-      <div style="padding:30px 0; text-align:center; color:var(--text-faint); font-size:12.5px;">Log trades to see your equity curve</div>
+      <div class="section-lbl">${t("profit_curve")}</div>
+      <div style="padding:30px 0; text-align:center; color:var(--text-faint); font-size:12.5px;">${t("no_curve_data")}</div>
     </div>`;
   }
   // aggregate cumulative P/L per calendar day
@@ -346,7 +812,7 @@ function renderEquityChart(){
   const uniqueIdx = [...new Set(labelIdx)];
   return `<div class="card" style="margin-bottom:14px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <div class="section-lbl" style="margin-bottom:0;">Profit Curve</div>
+      <div class="section-lbl" style="margin-bottom:0;">${t("profit_curve")}</div>
       <div class="mono" style="font-size:13px; font-weight:700; color:${lineColor};">${fmtMoney(last.val)}</div>
     </div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:110px; overflow:visible;" preserveAspectRatio="none">
@@ -373,8 +839,8 @@ function renderComboAnalysis(){
   const combos = computeCombos();
   if(combos.length===0){
     return `<div class="card" style="margin-bottom:14px;">
-      <div class="section-lbl">Kombinatsiya Tahlili</div>
-      <div style="padding:20px 0; text-align:center; color:var(--text-faint); font-size:12px;">ICT konseptlarini belgilab savdo qo'shsangiz, qaysi kombinatsiya foyda/zarar keltirayotgani shu yerda chiqadi</div>
+      <div class="section-lbl">${t("combo_title")}</div>
+      <div style="padding:20px 0; text-align:center; color:var(--text-faint); font-size:12px;">${t("combo_empty")}</div>
     </div>`;
   }
   const byPnlDesc = [...combos].sort((a,b)=>b.pnl-a.pnl);
@@ -385,17 +851,116 @@ function renderComboAnalysis(){
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <div style="flex:1; min-width:0;">
           <div style="font-size:12px; font-weight:600; line-height:1.3; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${esc(c.key)}</div>
-          <div class="sub" style="margin:3px 0 0; font-size:10.5px;">${c.count} savdo · ${c.winRate.toFixed(0)}% win rate</div>
+          <div class="sub" style="margin:3px 0 0; font-size:10.5px;">${t("combo_trades_wr")(c.count, c.winRate.toFixed(0))}</div>
         </div>
         <div class="mono" style="font-weight:700; font-size:13px; color:${color}; white-space:nowrap;">${fmtMoney(c.pnl)}</div>
       </div>
     </div>`;
   return `<div class="card" style="margin-bottom:14px;">
-    <div class="section-lbl">Kombinatsiya Tahlili</div>
-    <p class="sub" style="margin:-2px 0 12px;">Qaysi ICT kombinatsiyasi ko'p foyda yoki zarar keltirayotganini ko'ring. Bosib, o'sha savdolarni ko'ring.</p>
-    ${profitable.length?`<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--green); margin-bottom:6px;">Eng foydali</div>${profitable.map(c=>comboRow(c,"var(--green)")).join("")}`:""}
-    ${losing.length?`<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--red); margin:${profitable.length?'14px':'0'} 0 6px;">Eng zararli</div>${losing.map(c=>comboRow(c,"var(--red)")).join("")}`:""}
-    ${(!profitable.length && !losing.length)?`<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:10px 0;">Hali yetarli ma'lumot yo'q</div>`:""}
+    <div class="section-lbl">${t("combo_title")}</div>
+    <p class="sub" style="margin:-2px 0 12px;">${t("combo_sub")}</p>
+    ${profitable.length?`<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--green); margin-bottom:6px;">${t("combo_profitable")}</div>${profitable.map(c=>comboRow(c,"var(--green)")).join("")}`:""}
+    ${losing.length?`<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--red); margin:${profitable.length?'14px':'0'} 0 6px;">${t("combo_losing")}</div>${losing.map(c=>comboRow(c,"var(--red)")).join("")}`:""}
+    ${(!profitable.length && !losing.length)?`<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:10px 0;">${t("combo_notenough")}</div>`:""}
+  </div>`;
+}
+
+/* ---- win/loss gauge + streaks ---- */
+function renderWinLossGauge(s){
+  const total = s.wins+s.losses+s.be;
+  if(total===0){
+    return `<div style="width:64px;height:64px;border-radius:50%; background:var(--surface2); display:flex; align-items:center; justify-content:center;"><span style="color:var(--text-faint); font-size:11px;">—</span></div>`;
+  }
+  const winPct=(s.wins/total)*100, lossPct=(s.losses/total)*100;
+  const g1 = winPct, g2 = winPct+lossPct;
+  const gradient = `conic-gradient(var(--green) 0% ${g1}%, var(--red) ${g1}% ${g2}%, var(--text-faint) ${g2}% 100%)`;
+  return `<div style="position:relative; width:64px; height:64px; border-radius:50%; background:${gradient}; display:flex; align-items:center; justify-content:center;">
+    <div style="width:46px;height:46px;border-radius:50%; background:var(--surface); display:flex; align-items:center; justify-content:center;">
+      <span class="mono" style="font-size:12px; font-weight:700;">${s.winRate.toFixed(0)}%</span>
+    </div>
+  </div>`;
+}
+function renderStreakBadge(streak, label){
+  const color = streak.type==="win" ? "var(--green)" : streak.type==="loss" ? "var(--red)" : "var(--text-faint)";
+  return `<div style="text-align:center;">
+    <div style="width:42px;height:42px;border-radius:50%; border:2px solid ${color}; display:flex; align-items:center; justify-content:center; margin:0 auto 4px;">
+      <span class="mono" style="font-size:14px; font-weight:700; color:${color};">${streak.count}</span>
+    </div>
+    <div style="font-size:9.5px; color:var(--text-mid);">${label}</div>
+  </div>`;
+}
+function renderStreakCard(s){
+  return `<div class="card" style="margin-bottom:14px;">
+    <div class="section-lbl">${t("streak_title")}</div>
+    <div style="display:flex; align-items:center; justify-content:space-around; gap:8px;">
+      <div style="text-align:center;">
+        ${renderWinLossGauge(s)}
+        <div style="display:flex; gap:9px; margin-top:8px; font-size:10px; justify-content:center;">
+          <span style="color:var(--green);">● ${s.wins}</span>
+          <span style="color:var(--red);">● ${s.losses}</span>
+          <span style="color:var(--text-faint);">● ${s.be}</span>
+        </div>
+      </div>
+      ${renderStreakBadge(s.dayStreak, t("streak_days"))}
+      ${renderStreakBadge(s.tradeStreak, t("streak_trades"))}
+    </div>
+  </div>`;
+}
+function renderAvgWinLossBar(s){
+  const total = s.avgWin+s.avgLoss;
+  const winPct = total>0 ? (s.avgWin/total)*100 : 50;
+  return `<div class="card" style="margin-bottom:14px;">
+    <div class="section-lbl">${t("avg_win_loss_title")}</div>
+    <div style="display:flex; justify-content:space-between; font-size:13px; font-family:'SF Mono',monospace; margin-bottom:6px;">
+      <span style="color:var(--green); font-weight:700;">+$${s.avgWin.toFixed(0)}</span>
+      <span style="color:var(--red); font-weight:700;">-$${s.avgLoss.toFixed(0)}</span>
+    </div>
+    <div style="display:flex; height:8px; border-radius:4px; overflow:hidden;">
+      <div style="width:${winPct}%; background:var(--green);"></div>
+      <div style="width:${100-winPct}%; background:var(--red);"></div>
+    </div>
+  </div>`;
+}
+
+/* ---- Zella-style composite score radar ---- */
+function renderZellaRadar(breakdown){
+  const labels=[["winPct","zella_axis_winpct"],["pf","zella_axis_pf"],["avgWL","zella_axis_avgwl"],["recovery","zella_axis_recovery"],["consistency","zella_axis_consistency"],["maxDD","zella_axis_maxdd"]];
+  const size=220, cx=size/2, cy=size/2, R=size/2-34, n=labels.length;
+  const angleFor=(i)=>(Math.PI*2*i/n)-Math.PI/2;
+  const ptAt=(i,radius)=>{ const a=angleFor(i); return [cx+radius*Math.cos(a), cy+radius*Math.sin(a)]; };
+  const gridPolys=[25,50,75,100].map(lvl=>{
+    const pts=labels.map((_,i)=>ptAt(i,R*(lvl/100)).join(",")).join(" ");
+    return `<polygon points="${pts}" fill="none" stroke="var(--border-l)" stroke-width="1"/>`;
+  }).join("");
+  const axisLines=labels.map((_,i)=>{ const [x,y]=ptAt(i,R); return `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="var(--border-l)" stroke-width="1"/>`; }).join("");
+  const dataPts=labels.map(([key],i)=>ptAt(i, R*(Math.max(0,Math.min(100,breakdown[key]))/100)).join(",")).join(" ");
+  const labelEls=labels.map(([key,lkey],i)=>{
+    const [x,y]=ptAt(i,R+20);
+    return `<text x="${x}" y="${y}" font-size="8.5" fill="var(--text-mid)" text-anchor="middle" dominant-baseline="middle">${esc(t(lkey))}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${size} ${size}" style="width:100%; max-width:230px; display:block; margin:0 auto;">
+    ${gridPolys}${axisLines}
+    <polygon points="${dataPts}" fill="rgba(201,162,39,0.22)" stroke="var(--gold)" stroke-width="1.5"/>
+    ${labelEls}
+  </svg>`;
+}
+function renderZellaScoreBar(score){
+  const pct=Math.max(0,Math.min(100,score));
+  return `<div style="position:relative; height:8px; border-radius:4px; background:linear-gradient(to right, #E5484D, #F3A712, #3FB68B); margin:10px 0 4px;">
+    <div style="position:absolute; top:-3px; left:${pct}%; transform:translateX(-50%); width:3px; height:14px; background:#fff; border-radius:2px;"></div>
+  </div>
+  <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--text-faint);"><span>0</span><span>50</span><span>100</span></div>`;
+}
+function renderZellaCard(s){
+  if(s.total===0) return "";
+  return `<div class="card" style="margin-bottom:14px;">
+    <div class="section-lbl">${t("zella_score_title")}</div>
+    ${renderZellaRadar(s.zellaBreakdown)}
+    <div style="text-align:center; margin-top:6px;">
+      <div class="sub" style="margin:0;">${t("zella_your_score")}</div>
+      <div class="mono" style="font-size:30px; font-weight:700; color:var(--gold);">${s.zellaScore.toFixed(2)}</div>
+    </div>
+    ${renderZellaScoreBar(s.zellaScore)}
   </div>`;
 }
 
@@ -404,35 +969,38 @@ function renderDashboard(){
   const s = computeStats();
   return `<div>
     <div style="display:flex; align-items:center; justify-content:space-between;">
-      <div><h1 class="disp">Dashboard</h1><p class="sub">Performance overview</p></div>
+      <div><h1 class="disp">${t("dash_title")}</h1><p class="sub">${t("dash_sub")}</p></div>
       <button data-editbalance style="background:none;border:1px solid var(--border-l);color:var(--text-mid);border-radius:8px;padding:6px 10px;font-size:11px;font-family:'SF Mono',monospace;">$${getBaseBalance().toLocaleString()}</button>
     </div>
     ${renderEquityChart()}
     ${renderCalendar()}
     <div class="card" style="margin-bottom:10px;">
-      <div class="lbl">Net P/L</div>
+      <div class="lbl">${t("net_pl")}</div>
       <div class="mono" style="font-size:26px; font-weight:700; color:${s.netPnl>=0?'var(--green)':'var(--red)'};">${fmtMoney(s.netPnl)}</div>
     </div>
+    ${renderStreakCard(s)}
+    ${renderAvgWinLossBar(s)}
     <div class="grid3" style="margin-bottom:10px;">
-      <div class="stat-mini"><div class="lbl">Trades</div><div class="v">${s.total}</div></div>
-      <div class="stat-mini"><div class="lbl">Win Rate</div><div class="v" style="color:var(--gold)">${s.winRate.toFixed(0)}%</div></div>
-      <div class="stat-mini"><div class="lbl">Avg R:R</div><div class="v">${s.avgRR?"1:"+s.avgRR.toFixed(1):"—"}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_trades")}</div><div class="v">${s.total}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_winrate")}</div><div class="v" style="color:var(--gold)">${s.winRate.toFixed(0)}%</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_avgrr")}</div><div class="v">${s.avgRR?"1:"+s.avgRR.toFixed(1):"—"}</div></div>
     </div>
     <div class="grid3" style="margin-bottom:14px;">
-      <div class="stat-mini"><div class="lbl">Profit Factor</div><div class="v">${s.profitFactor===Infinity?"∞":s.profitFactor?s.profitFactor.toFixed(2):"—"}</div></div>
-      <div class="stat-mini"><div class="lbl">Max DD</div><div class="v" style="color:${s.maxDD>10?'var(--red)':'var(--text)'}">${s.maxDD.toFixed(1)}%</div></div>
-      <div class="stat-mini"><div class="lbl">W/L/BE</div><div class="v" style="font-size:14px;">${s.wins}/${s.losses}/${s.be}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_pf")}</div><div class="v">${s.profitFactor===Infinity?"∞":s.profitFactor?s.profitFactor.toFixed(2):"—"}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_maxdd")}</div><div class="v" style="color:${s.maxDD>10?'var(--red)':'var(--text)'}">${s.maxDD.toFixed(1)}%</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_wlbe")}</div><div class="v" style="font-size:14px;">${s.wins}/${s.losses}/${s.be}</div></div>
     </div>
     <div class="grid2" style="margin-bottom:14px;">
-      <div class="stat-mini"><div class="lbl">Best Session</div><div style="color:var(--gold); font-weight:600; font-size:13.5px;">${s.bestSession?s.bestSession[0]:"—"}</div>${s.bestSession?`<div class="sub" style="margin:2px 0 0;">${fmtMoney(s.bestSession[1].pnl)}</div>`:""}</div>
-      <div class="stat-mini"><div class="lbl">Best Setup</div><div style="color:var(--gold); font-weight:600; font-size:13.5px; line-height:1.3;">${s.bestSetup?s.bestSetup[0]:"—"}</div>${s.bestSetup?`<div class="sub" style="margin:2px 0 0;">${fmtMoney(s.bestSetup[1].pnl)}</div>`:""}</div>
+      <div class="stat-mini"><div class="lbl">${t("best_session")}</div><div style="color:var(--gold); font-weight:600; font-size:13.5px;">${s.bestSession?s.bestSession[0]:"—"}</div>${s.bestSession?`<div class="sub" style="margin:2px 0 0;">${fmtMoney(s.bestSession[1].pnl)}</div>`:""}</div>
+      <div class="stat-mini"><div class="lbl">${t("best_setup")}</div><div style="color:var(--gold); font-weight:600; font-size:13.5px; line-height:1.3;">${s.bestSetup?s.bestSetup[0]:"—"}</div>${s.bestSetup?`<div class="sub" style="margin:2px 0 0;">${fmtMoney(s.bestSetup[1].pnl)}</div>`:""}</div>
     </div>
+    ${renderZellaCard(s)}
     ${renderComboAnalysis()}
     <div class="card">
-      <div class="section-lbl">Psychology Insights</div>
+      <div class="section-lbl">${t("psych_insights")}</div>
       <div class="grid2">
-        <div><div class="lbl">Avg Discipline</div><div class="mono" style="font-size:16px; font-weight:700; color:var(--gold);">${s.avgDiscipline?s.avgDiscipline.toFixed(1):"—"}/10</div></div>
-        <div><div class="lbl">Top Mistake</div><div style="font-size:13px; color:var(--red); font-weight:500;">${s.topMistake?s.topMistake[0]:"None logged"}</div></div>
+        <div><div class="lbl">${t("avg_discipline")}</div><div class="mono" style="font-size:16px; font-weight:700; color:var(--gold);">${s.avgDiscipline?s.avgDiscipline.toFixed(1):"—"}/10</div></div>
+        <div><div class="lbl">${t("top_mistake")}</div><div style="font-size:13px; color:var(--red); font-weight:500;">${s.topMistake?s.topMistake[0]:t("none_logged")}</div></div>
       </div>
     </div>
   </div>`;
@@ -444,14 +1012,18 @@ function renderJournal(){
   if(state.dateFilter) filtered = filtered.filter(t=>new Date(t.datetime).toDateString()===state.dateFilter);
   if(state.comboFilter) filtered = filtered.filter(t=>comboKey(t)===state.comboFilter);
   return `<div>
-    <h1 class="disp">Journal</h1><p class="sub">${state.trades.length} trades logged</p>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div><h1 class="disp">${t("journal_title")}</h1><p class="sub">${t("trades_logged")(state.trades.length)}</p></div>
+      <button type="button" id="import-csv-btn" style="background:var(--surface2); border:1px solid var(--border-l); color:var(--text-mid); border-radius:8px; padding:7px 11px; font-size:11px; display:flex; align-items:center; gap:5px; white-space:nowrap;">${ICONS.upload||''} ${t("import_btn")}</button>
+      <input type="file" id="import-csv-file" accept=".csv,.txt" style="display:none;">
+    </div>
     ${state.dateFilter?`<div class="chip active-gold" style="display:inline-flex; margin-bottom:10px;" data-cleardate>${new Date(state.dateFilter).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})} ✕</div>`:""}
     ${state.comboFilter?`<div class="chip active-gold" style="display:inline-flex; margin-bottom:10px; max-width:100%; white-space:normal;" data-clearcombo>${esc(state.comboFilter)} ✕</div>`:""}
     <div class="chip-group" style="margin-bottom:14px;">
-      ${["all","Win","Loss","Break Even"].map(f=>`<button class="chip ${state.filter===f?'active-gold':''}" data-filter="${f}">${f==="all"?"All":f}</button>`).join("")}
+      ${["all","Win","Loss","Break Even"].map(f=>`<button class="chip ${state.filter===f?'active-gold':''}" data-filter="${f}">${f==="all"?t("filter_all"):t(f==="Win"?"win":f==="Loss"?"loss":"breakeven")}</button>`).join("")}
     </div>
     ${filtered.length===0
-      ? `<div class="empty-state">${state.trades.length===0?"No trades yet. Tap + to log your first trade.":"No trades match this filter."}</div>`
+      ? `<div class="empty-state">${state.trades.length===0?t("empty_none"):t("empty_filtered")}</div>`
       : filtered.map(tradeCardHtml).join("")}
   </div>`;
 }
@@ -478,13 +1050,51 @@ function tradeCardHtml(t){
   </div>`;
 }
 
+/* ---- CSV / MT5 Import screen ---- */
+function renderImportScreen(){
+  const data = state.importData;
+  if(!data) return `<div class="empty-state">${t("import_no_data")}</div>`;
+  const { headers, rows, mapping } = data;
+  const fieldRows = [
+    ["pair","import_field_pair"], ["datetime","import_field_datetime"], ["direction","import_field_direction"],
+    ["entry","import_field_entry"], ["sl","import_field_sl"], ["tp","import_field_tp"],
+    ["lot","import_field_lot"], ["pnl","import_field_pnl"], ["comment","import_field_comment"],
+  ];
+  const dropdown=(key)=>{
+    const opts = [`<option value="-1">${t("import_none")}</option>`]
+      .concat(headers.map((h,i)=>`<option value="${i}" ${mapping[key]===i?"selected":""}>${esc(h)}</option>`));
+    return `<select data-mapfield="${key}" style="font-size:12px; padding:6px 8px;">${opts.join("")}</select>`;
+  };
+  const previewRows = rows.slice(0,5);
+  return `<div>
+    <button class="btn-back" data-back="list">${ICONS.chev} ${t("back")}</button>
+    <h2 class="disp" style="font-size:19px; margin-bottom:6px;">${t("import_map_title")}</h2>
+    <p class="sub">${t("import_map_sub")(rows.length)}</p>
+    <div class="card" style="margin-bottom:14px;">
+      ${fieldRows.map(([key,labelKey])=>`
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:10px;">
+          <div style="font-size:12.5px; color:var(--text-mid); flex:1;">${t(labelKey)}</div>
+          <div style="flex:1;">${dropdown(key)}</div>
+        </div>`).join("")}
+    </div>
+    <div class="section-lbl">${t("import_preview")}</div>
+    <div style="overflow-x:auto; margin-bottom:16px;" class="card">
+      <table style="border-collapse:collapse; font-size:11px; width:100%;">
+        <thead><tr>${headers.map(h=>`<th style="text-align:left; padding:4px 8px; color:var(--text-mid); border-bottom:1px solid var(--border);">${esc(h)}</th>`).join("")}</tr></thead>
+        <tbody>${previewRows.map(r=>`<tr>${headers.map((_,i)=>`<td style="padding:4px 8px; border-bottom:1px solid var(--border); color:var(--text-dim); white-space:nowrap;">${esc(r[i]||"")}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </div>
+    <button class="btn-primary" id="import-confirm-btn">${t("import_confirm")(rows.length)}</button>
+  </div>`;
+}
+
 /* ---- trade detail ---- */
 function renderDetail(){
   const t = state.trades.find(x=>x.id===state.activeId);
   if(!t) { state.view="list"; return renderJournal(); }
   const dirColor = t.direction==="Buy"?"var(--green)":"var(--red)";
   return `<div>
-    <button class="btn-back" data-back="list">${ICONS.chev} Back</button>
+    <button class="btn-back" data-back="list">${ICONS.chev} ${t2("back")}</button>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
       <div style="display:flex; gap:10px; align-items:center;">
         <div style="width:36px;height:36px;border-radius:8px;background:${dirColor}1A;display:flex;align-items:center;justify-content:center;color:${dirColor};">${t.direction==="Buy"?ICONS.up:ICONS.down}</div>
@@ -493,31 +1103,31 @@ function renderDetail(){
       <div class="mono" style="font-weight:700; font-size:17px; color:${t.pnl>0?'var(--green)':t.pnl<0?'var(--red)':'var(--text-mid)'}">${fmtMoney(t.pnl||0)}</div>
     </div>
     <div class="chip-group" style="margin-bottom:14px;">
-      <span class="badge ${t.result==='Win'?'green':t.result==='Loss'?'red':''}">${t.result}</span>
+      <span class="badge ${t.result==='Win'?'green':t.result==='Loss'?'red':''}">${t.result==='Win'?t2("win"):t.result==='Loss'?t2("loss"):t2("breakeven")}</span>
       ${t.rr?`<span class="badge">R:R 1:${t.rr}</span>`:""}
       ${t.lotSize?`<span class="badge">${t.lotSize} lots</span>`:""}
       ${t.riskPercent?`<span class="badge">${t.riskPercent}% risk</span>`:""}
     </div>
     <div class="grid3" style="margin-bottom:14px;">
-      <div class="stat-mini" style="text-align:center;"><div class="lbl">Entry</div><div class="mono" style="font-size:13px;">${t.entryPrice||"—"}</div></div>
-      <div class="stat-mini" style="text-align:center;"><div class="lbl">Stop Loss</div><div class="mono" style="font-size:13px;color:var(--red)">${t.stopLoss||"—"}</div></div>
-      <div class="stat-mini" style="text-align:center;"><div class="lbl">Take Profit</div><div class="mono" style="font-size:13px;color:var(--green)">${t.takeProfit||"—"}</div></div>
+      <div class="stat-mini" style="text-align:center;"><div class="lbl">${t2("fld_entry")}</div><div class="mono" style="font-size:13px;">${t.entryPrice||"—"}</div></div>
+      <div class="stat-mini" style="text-align:center;"><div class="lbl">${t2("fld_sl")}</div><div class="mono" style="font-size:13px;color:var(--red)">${t.stopLoss||"—"}</div></div>
+      <div class="stat-mini" style="text-align:center;"><div class="lbl">${t2("fld_tp")}</div><div class="mono" style="font-size:13px;color:var(--green)">${t.takeProfit||"—"}</div></div>
     </div>
-    ${t.concepts&&t.concepts.length?`<div style="margin-bottom:14px;"><div class="section-lbl">ICT Concepts</div><div class="chip-group">${t.concepts.map(c=>`<span class="badge gold">${c}</span>`).join("")}</div></div>`:""}
+    ${t.concepts&&t.concepts.length?`<div style="margin-bottom:14px;"><div class="section-lbl">${t2("ict_concepts")}</div><div class="chip-group">${t.concepts.map(c=>`<span class="badge gold">${c}</span>`).join("")}</div></div>`:""}
     <div class="grid2" style="margin-bottom:14px;">
-      <div class="stat-mini"><div class="lbl">Emotion</div><div style="font-size:13px;">${t.emotion||"—"}</div></div>
-      <div class="stat-mini"><div class="lbl">Discipline</div><div class="mono" style="font-size:13px;color:var(--gold)">${t.disciplineScore||"—"}/10</div></div>
+      <div class="stat-mini"><div class="lbl">${t2("emotion")}</div><div style="font-size:13px;">${t.emotion||"—"}</div></div>
+      <div class="stat-mini"><div class="lbl">${t2("discipline")}</div><div class="mono" style="font-size:13px;color:var(--gold)">${t.disciplineScore||"—"}/10</div></div>
     </div>
-    ${t.mistakes&&t.mistakes.length?`<div style="margin-bottom:14px;"><div class="section-lbl">Mistakes</div><div class="chip-group">${t.mistakes.map(m=>`<span class="badge red">${m}</span>`).join("")}</div></div>`:""}
-    ${t.lessons?`<div style="margin-bottom:14px;"><div class="section-lbl">Lessons Learned</div><p style="font-size:13px; color:var(--text-mid); line-height:1.5; white-space:pre-wrap;">${esc(t.lessons)}</p></div>`:""}
-    ${t.notes?`<div style="margin-bottom:14px;"><div class="section-lbl">Notes</div><p style="font-size:13px; color:var(--text); line-height:1.5; white-space:pre-wrap;">${esc(t.notes)}</p></div>`:""}
-    ${(t.before||t.after)?`<div style="margin-bottom:16px;"><div class="section-lbl">Screenshots</div><div class="grid2">
-      <div><div class="sub" style="margin:0 0 4px;">BEFORE</div><div class="imgdrop" style="cursor:default;">${t.before?`<img src="${t.before}">`:""}</div></div>
-      <div><div class="sub" style="margin:0 0 4px;">AFTER</div><div class="imgdrop" style="cursor:default;">${t.after?`<img src="${t.after}">`:""}</div></div>
+    ${t.mistakes&&t.mistakes.length?`<div style="margin-bottom:14px;"><div class="section-lbl">${t2("mistakes")}</div><div class="chip-group">${t.mistakes.map(m=>`<span class="badge red">${m}</span>`).join("")}</div></div>`:""}
+    ${t.lessons?`<div style="margin-bottom:14px;"><div class="section-lbl">${t2("lessons")}</div><p style="font-size:13px; color:var(--text-mid); line-height:1.5; white-space:pre-wrap;">${esc(t.lessons)}</p></div>`:""}
+    ${t.notes?`<div style="margin-bottom:14px;"><div class="section-lbl">${t2("notes")}</div><p style="font-size:13px; color:var(--text); line-height:1.5; white-space:pre-wrap;">${esc(t.notes)}</p></div>`:""}
+    ${(t.before||t.after)?`<div style="margin-bottom:16px;"><div class="section-lbl">${t2("sec_screenshots")}</div><div class="grid2">
+      <div><div class="sub" style="margin:0 0 4px;">${t2("before").toUpperCase()}</div><div class="imgdrop" style="cursor:default;">${t.before?`<img src="${t.before}">`:""}</div></div>
+      <div><div class="sub" style="margin:0 0 4px;">${t2("after").toUpperCase()}</div><div class="imgdrop" style="cursor:default;">${t.after?`<img src="${t.after}">`:""}</div></div>
     </div></div>`:""}
     <div class="row">
-      <button class="btn-ghost" style="flex:1;" data-edittrade="${t.id}">Edit</button>
-      <button class="btn-ghost" style="color:var(--red);" data-deltrade="${t.id}">Delete</button>
+      <button class="btn-ghost" style="flex:1;" data-edittrade="${t.id}">${t2("detail_edit")}</button>
+      <button class="btn-ghost" style="color:var(--red);" data-deltrade="${t.id}">${t2("detail_delete")}</button>
     </div>
   </div>`;
 }
@@ -527,74 +1137,100 @@ function renderForm(){
   const t = state.draft || {};
   curDir = t.direction || "Buy";
   curResult = t.result || "Win";
+  const showIct = getActiveConcepts().length>0 || (t.concepts&&t.concepts.length>0);
+  const showPsych = getActiveEmotions().length>0 || getActiveMistakes().length>0 || !!t.emotion || (t.mistakes&&t.mistakes.length>0) || !!t.lessons;
+  const showNotesSec = showNotes() || !!t.notes;
+  const showShotsSec = showShots() || !!t.before || !!t.after;
 
   return `<div>
-    <button class="btn-back" data-back="${t.id?'detail':'list'}">${ICONS.chev} Back</button>
-    <h2 class="disp" style="font-size:19px; margin-bottom:16px;">${t.id?"Edit Trade":"New Trade"}</h2>
+    <button class="btn-back" data-back="${t.id?'detail':'list'}">${ICONS.chev} ${t2("back")}</button>
+    <h2 class="disp" style="font-size:19px; margin-bottom:16px;">${t.id?t2("edit_trade"):t2("new_trade")}</h2>
 
-    <div class="section-lbl">Trade Details</div>
+    <div class="section-lbl">${t2("sec_trade_details")}</div>
     <div class="grid2" style="margin-bottom:10px;">
-      <div><div class="lbl">Pair</div><input id="f-pair" placeholder="XAUUSD" value="${esc(t.pair||"")}"></div>
-      <div><div class="lbl">Date & Time</div><input id="f-datetime" type="datetime-local" value="${t.datetime||new Date().toISOString().slice(0,16)}"></div>
+      <div><div class="lbl">${t2("fld_pair")}</div><input id="f-pair" placeholder="XAUUSD" value="${esc(t.pair||"")}"></div>
+      <div><div class="lbl">${t2("fld_datetime")}</div><input id="f-datetime" type="datetime-local" value="${t.datetime||new Date().toISOString().slice(0,16)}"></div>
     </div>
     <div class="grid2" style="margin-bottom:10px;">
-      <div><div class="lbl">Session</div><select id="f-session">${SESSIONS.map(s=>`<option ${t.session===s?"selected":""}>${s}</option>`).join("")}</select></div>
-      <div><div class="lbl">Direction</div><div class="toggle2">
-        <button type="button" data-dir="Buy" class="${curDir==="Buy"?"on-green":""}">Buy</button>
-        <button type="button" data-dir="Sell" class="${curDir==="Sell"?"on-red":""}">Sell</button>
+      <div><div class="lbl">${t2("fld_session")}</div><select id="f-session">${SESSIONS.map(s=>`<option ${t.session===s?"selected":""}>${s}</option>`).join("")}</select></div>
+      <div><div class="lbl">${t2("fld_direction")}</div><div class="toggle2">
+        <button type="button" data-dir="Buy" class="${curDir==="Buy"?"on-green":""}">${t2("buy")}</button>
+        <button type="button" data-dir="Sell" class="${curDir==="Sell"?"on-red":""}">${t2("sell")}</button>
       </div></div>
     </div>
     <div class="grid3" style="margin-bottom:10px;">
-      <div><div class="lbl">Entry</div><input id="f-entry" value="${t.entryPrice||""}" placeholder="2345.5"></div>
-      <div><div class="lbl">Stop Loss</div><input id="f-sl" value="${t.stopLoss||""}" placeholder="2340"></div>
-      <div><div class="lbl">Take Profit</div><input id="f-tp" value="${t.takeProfit||""}" placeholder="2360"></div>
+      <div><div class="lbl">${t2("fld_entry")}</div><input id="f-entry" value="${t.entryPrice||""}" placeholder="2345.5"></div>
+      <div><div class="lbl">${t2("fld_sl")}</div><input id="f-sl" value="${t.stopLoss||""}" placeholder="2340"></div>
+      <div><div class="lbl">${t2("fld_tp")}</div><input id="f-tp" value="${t.takeProfit||""}" placeholder="2360"></div>
     </div>
     <div class="grid3" style="margin-bottom:10px;">
-      <div><div class="lbl">Risk %</div><input id="f-risk" value="${t.riskPercent||"1"}"></div>
-      <div><div class="lbl">Lot Size</div><input id="f-lot" value="${t.lotSize||""}" placeholder="0.5"></div>
-      <div><div class="lbl">R:R</div><div id="f-rr-display" class="mono" style="padding:9px 0; color:var(--gold); font-size:13.5px;">${t.rr?"1:"+t.rr:"—"}</div></div>
+      <div><div class="lbl">${t2("fld_risk_pct")}</div><input id="f-risk" value="${t.riskPercent||"1"}"></div>
+      <div><div class="lbl">${t2("fld_lot")}</div><input id="f-lot" value="${t.lotSize||""}" placeholder="0.5"></div>
+      <div><div class="lbl">${t2("fld_rr")}</div><div id="f-rr-display" class="mono" style="padding:9px 0; color:var(--gold); font-size:13.5px;">${t.rr?"1:"+t.rr:"—"}</div></div>
     </div>
     <div class="grid2" style="margin-bottom:18px;">
-      <div><div class="lbl">Result</div><div class="chip-group" id="f-result">
-        ${RESULTS.map(r=>`<button type="button" data-result="${r}" class="chip ${curResult===r?(r==="Win"?"active-gold":r==="Loss"?"active-red":"active-gold"):""}" style="flex:1;">${r==="Break Even"?"BE":r}</button>`).join("")}
+      <div><div class="lbl">${t2("sec_outcome")}</div><div class="chip-group" id="f-result">
+        ${RESULTS.map(r=>`<button type="button" data-result="${r}" class="chip ${curResult===r?(r==="Win"?"active-gold":r==="Loss"?"active-red":"active-gold"):""}" style="flex:1;">${r==="Break Even"?t2("be"):r==="Win"?t2("win"):t2("loss")}</button>`).join("")}
       </div></div>
-      <div><div class="lbl">P/L Amount ($)</div><input id="f-pnl" value="${t.pnl??""}" placeholder="150"></div>
+      <div><div class="lbl">${t2("fld_pnl")}</div><input id="f-pnl" value="${t.pnl??""}" placeholder="150"><div id="f-pnl-hint" style="font-size:9.5px; color:var(--text-faint); margin-top:3px;"></div></div>
     </div>
 
-    <div class="section-lbl">ICT / Smart Money Concepts</div>
+    ${showIct ? `
+    <div class="section-lbl">${t2("sec_ict")}</div>
     <div class="chip-group" id="f-concepts" style="margin-bottom:18px;">
       ${getActiveConcepts().map(c=>`<button type="button" data-concept="${c}" class="chip ${((t.concepts||[]).includes(c))?"active-gold":""}">${c}</button>`).join("")}
+      <button type="button" id="add-concept-btn" class="chip" style="border-style:dashed;">${t2("add_term")}</button>
     </div>
-    <div style="margin:-10px 0 18px;"><button type="button" data-goto-terms style="background:none;border:none;color:var(--text-dim);font-size:11px;text-decoration:underline;padding:0;">O'z terminlaringizni sozlash →</button></div>
+    <div style="margin:-10px 0 18px;"><button type="button" data-goto-terms style="background:none;border:none;color:var(--text-dim);font-size:11px;text-decoration:underline;padding:0;">${t2("goto_terms")}</button></div>
+    ` : `
+    <div style="margin-bottom:18px;"><button type="button" data-goto-terms style="background:none;border:1px dashed var(--border-l);color:var(--text-dim);font-size:12px;border-radius:8px;padding:10px;width:100%;text-align:left;">+ ${t2("sec_ict")} — ${t2("goto_ict_hint")}</button></div>
+    `}
 
-    <div class="section-lbl">Psychology</div>
-    <div class="grid2" style="margin-bottom:10px;">
-      <div><div class="lbl">Emotion Before Trade</div><select id="f-emotion">${EMOTIONS.map(e=>`<option ${t.emotion===e?"selected":""}>${e}</option>`).join("")}</select></div>
-      <div><div class="lbl">Discipline: <span id="f-disc-val">${t.disciplineScore||7}</span>/10</div><input id="f-discipline" type="range" min="1" max="10" value="${t.disciplineScore||7}" style="accent-color:var(--gold); padding:9px 0;"></div>
+    ${showPsych ? `
+    <div class="section-lbl">${t2("sec_psych")}</div>
+    <div style="margin-bottom:10px;"><div class="lbl">${t2("fld_emotion")}</div>
+      <div class="chip-group" id="f-emotion">${getActiveEmotions().map(e=>`<button type="button" data-emotion="${e}" class="chip ${(t.emotion===e)?"active-gold":""}">${e}</button>`).join("")}
+        <button type="button" id="add-emotion-btn" class="chip" style="border-style:dashed;">${t2("add_term")}</button>
+      </div>
     </div>
-    <div style="margin-bottom:10px;"><div class="lbl">Mistakes Made</div>
-      <div class="chip-group" id="f-mistakes">${MISTAKES.map(m=>`<button type="button" data-mistake="${m}" class="chip ${((t.mistakes||[]).includes(m))?"active-red":""}">${m}</button>`).join("")}</div>
+    <div style="margin-bottom:10px;"><div class="lbl">${t2("fld_discipline")}: <span id="f-disc-val">${t.disciplineScore||7}</span>/10</div><input id="f-discipline" type="range" min="1" max="10" value="${t.disciplineScore||7}" style="accent-color:var(--gold); padding:9px 0;"></div>
+    <div style="margin-bottom:10px;"><div class="lbl">${t2("fld_mistakes")}</div>
+      <div class="chip-group" id="f-mistakes">${getActiveMistakes().map(m=>`<button type="button" data-mistake="${m}" class="chip ${((t.mistakes||[]).includes(m))?"active-red":""}">${m}</button>`).join("")}
+        <button type="button" id="add-mistake-btn" class="chip" style="border-style:dashed;">${t2("add_mistake")}</button>
+      </div>
     </div>
-    <div style="margin-bottom:18px;"><div class="lbl">Lessons Learned</div><textarea id="f-lessons" rows="2" placeholder="What will you do differently?">${esc(t.lessons||"")}</textarea></div>
+    <div style="margin-bottom:18px;"><div class="lbl">${t2("fld_lessons")}</div><textarea id="f-lessons" rows="2" placeholder="${t2("ph_lessons")}">${esc(t.lessons||"")}</textarea></div>
+    ` : `
+    <div style="margin-bottom:18px;"><button type="button" data-goto-psych style="background:none;border:1px dashed var(--border-l);color:var(--text-dim);font-size:12px;border-radius:8px;padding:10px;width:100%;text-align:left;">+ ${t2("sec_psych")} — ${t2("goto_psych_hint")}</button></div>
+    `}
 
-    <div class="section-lbl">Notes</div>
-    <div style="margin-bottom:18px;"><textarea id="f-notes" rows="3" placeholder="HTF bias, confluence, execution...">${esc(t.notes||"")}</textarea></div>
+    ${showNotesSec ? `
+    <div class="section-lbl">${t2("sec_notes")}</div>
+    <div style="margin-bottom:18px;"><textarea id="f-notes" rows="3" placeholder="${t2("ph_notes")}">${esc(t.notes||"")}</textarea></div>
+    ` : `
+    <input type="hidden" id="f-notes" value="${esc(t.notes||"")}">
+    <div style="margin-bottom:12px;"><button type="button" data-inlineshow="notes" style="background:none;border:1px dashed var(--border-l);color:var(--text-dim);font-size:12px;border-radius:8px;padding:10px;width:100%;text-align:left;">+ ${t2("sec_notes")}</button></div>
+    `}
 
-    <div class="section-lbl">Screenshots</div>
+    ${showShotsSec ? `
+    <div class="section-lbl">${t2("sec_screenshots")}</div>
     <div class="grid2" style="margin-bottom:20px;">
-      <div><div class="lbl">Before</div><div class="imgdrop" id="drop-before">
-        ${t.before?`<img src="${t.before}"><button type="button" class="rm" data-rmimg="before">${ICONS.x}</button>`:`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`}
+      <div><div class="lbl">${t2("before")}</div><div class="imgdrop" id="drop-before">
+        ${t.before?`<img src="${t.before}"><button type="button" class="rm" data-rmimg="before">${ICONS.x}</button>`:`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`}
         <input type="file" accept="image/*" id="file-before" style="display:none;">
       </div></div>
-      <div><div class="lbl">After</div><div class="imgdrop" id="drop-after">
-        ${t.after?`<img src="${t.after}"><button type="button" class="rm" data-rmimg="after">${ICONS.x}</button>`:`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`}
+      <div><div class="lbl">${t2("after")}</div><div class="imgdrop" id="drop-after">
+        ${t.after?`<img src="${t.after}"><button type="button" class="rm" data-rmimg="after">${ICONS.x}</button>`:`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`}
         <input type="file" accept="image/*" id="file-after" style="display:none;">
       </div></div>
     </div>
+    ` : `
+    <div style="margin-bottom:20px;"><button type="button" data-inlineshow="shots" style="background:none;border:1px dashed var(--border-l);color:var(--text-dim);font-size:12px;border-radius:8px;padding:10px;width:100%;text-align:left;">+ ${t2("sec_screenshots")}</button></div>
+    `}
 
     <div class="sticky-save row">
-      <button class="btn-primary" id="save-trade-btn" style="flex:1;">Save Trade</button>
-      <button class="btn-ghost" data-back="${t.id?'detail':'list'}">Cancel</button>
+      <button class="btn-primary" id="save-trade-btn" style="flex:1;">${t.id?t2("update_trade"):t2("save_trade")}</button>
+      <button class="btn-ghost" data-back="${t.id?'detail':'list'}">${t2("cancel")}</button>
     </div>
   </div>`;
 }
@@ -609,13 +1245,13 @@ if(!state.real) state.real = loadReal();
 function renderAccounts(){
   const modeSwitch = `
     <div class="toggle2" style="margin-bottom:16px;">
-      <button type="button" data-accmode="real" class="${state.accountMode==="real"?"on-green":""}">Real Depozit</button>
-      <button type="button" data-accmode="prop" class="${state.accountMode==="prop"?"on-green":""}">Prop Firm</button>
+      <button type="button" data-accmode="real" class="${state.accountMode==="real"?"on-green":""}">${t("acc_real")}</button>
+      <button type="button" data-accmode="prop" class="${state.accountMode==="prop"?"on-green":""}">${t("acc_prop")}</button>
     </div>`;
   if(state.accountMode==="real"){
-    return `<div><h1 class="disp">Hisob</h1><p class="sub">Real savdo depozitingiz</p>${modeSwitch}${renderRealAccount()}</div>`;
+    return `<div><h1 class="disp">${t("acc_title")}</h1><p class="sub">${t("acc_sub_real")}</p>${modeSwitch}${renderRealAccount()}</div>`;
   }
-  return `<div><h1 class="disp">Hisob</h1><p class="sub">Prop firm challenge / funded hisob</p>${modeSwitch}${renderProp()}</div>`;
+  return `<div><h1 class="disp">${t("acc_title")}</h1><p class="sub">${t("acc_sub_prop")}</p>${modeSwitch}${renderProp()}</div>`;
 }
 
 function renderRealAccount(){
@@ -623,9 +1259,9 @@ function renderRealAccount(){
   if(!r || state.view==="realedit"){
     const d = r||{deposit:1000, broker:"", currency:"USD"};
     return `<div>
-      <div style="margin-bottom:10px;"><div class="lbl">Depozit summasi ($)</div><input id="r-deposit" value="${d.deposit}"></div>
-      <div style="margin-bottom:18px;"><div class="lbl">Broker nomi (ixtiyoriy)</div><input id="r-broker" value="${esc(d.broker||"")}" placeholder="Masalan: Exness, IC Markets"></div>
-      <button class="btn-primary" id="save-real-btn">Saqlash</button>
+      <div style="margin-bottom:10px;"><div class="lbl">${t("fld_deposit")}</div><input id="r-deposit" value="${d.deposit}"></div>
+      <div style="margin-bottom:18px;"><div class="lbl">${t("fld_broker")}</div><input id="r-broker" value="${esc(d.broker||"")}" placeholder="Exness, IC Markets..."></div>
+      <button class="btn-primary" id="save-real-btn">${t("save")}</button>
     </div>`;
   }
   const netPnl = state.trades.filter(t=>t.result).reduce((s,t)=>s+(Number(t.pnl)||0),0);
@@ -640,18 +1276,18 @@ function renderRealAccount(){
   });
   return `<div>
     <div style="display:flex; justify-content:space-between; align-items:center;">
-      <div class="sub" style="margin:0;">${r.broker?esc(r.broker):"Real hisob"}</div>
-      <button data-editreal style="background:none;border:none;color:var(--text-mid);font-size:12px; font-family:'SF Mono',monospace;">Tahrirlash</button>
+      <div class="sub" style="margin:0;">${r.broker?esc(r.broker):t("real_account_label")}</div>
+      <button data-editreal style="background:none;border:none;color:var(--text-mid);font-size:12px; font-family:'SF Mono',monospace;">${t("edit")}</button>
     </div>
     <div class="card" style="margin:10px 0 12px;">
-      <div class="lbl">Joriy Balans</div>
+      <div class="lbl">${t("cur_balance")}</div>
       <div class="mono" style="font-size:26px; font-weight:700; color:${netPnl>=0?'var(--green)':'var(--red)'};">$${currentBalance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-      <div class="sub" style="margin:2px 0 0;">Depozit: $${r.deposit.toLocaleString()} · ${fmtMoney(netPnl)} (${growthPct>=0?"+":""}${growthPct.toFixed(1)}%)</div>
+      <div class="sub" style="margin:2px 0 0;">${t("fld_deposit").replace(" ($)","")}: $${r.deposit.toLocaleString()} · ${fmtMoney(netPnl)} (${growthPct>=0?"+":""}${growthPct.toFixed(1)}%)</div>
     </div>
     <div class="grid3">
-      <div class="stat-mini"><div class="lbl">Savdolar</div><div class="v">${closed.length}</div></div>
-      <div class="stat-mini"><div class="lbl">Win Rate</div><div class="v" style="color:var(--gold)">${winRate.toFixed(0)}%</div></div>
-      <div class="stat-mini"><div class="lbl">Max DD</div><div class="v" style="color:${maxDD>10?'var(--red)':'var(--text)'}">${maxDD.toFixed(1)}%</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_trades")}</div><div class="v">${closed.length}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_winrate")}</div><div class="v" style="color:var(--gold)">${winRate.toFixed(0)}%</div></div>
+      <div class="stat-mini"><div class="lbl">${t("stat_maxdd")}</div><div class="v" style="color:${maxDD>10?'var(--red)':'var(--text)'}">${maxDD.toFixed(1)}%</div></div>
     </div>
   </div>`;
 }
@@ -662,14 +1298,14 @@ function renderProp(){
   if(!p || state.view==="propedit"){
     const d = p||{accountSize:10000,phase:"Phase 1",dailyLossLimit:5,maxDrawdown:10,profitTarget:8};
     return `<div>
-      <div style="margin-bottom:10px;"><div class="lbl">Account Size ($)</div><input id="p-size" value="${d.accountSize}"></div>
-      <div style="margin-bottom:10px;"><div class="lbl">Challenge Phase</div><select id="p-phase">${PHASES.map(ph=>`<option ${d.phase===ph?"selected":""}>${ph}</option>`).join("")}</select></div>
+      <div style="margin-bottom:10px;"><div class="lbl">${t("fld_acc_size")}</div><input id="p-size" value="${d.accountSize}"></div>
+      <div style="margin-bottom:10px;"><div class="lbl">${t("fld_phase")}</div><select id="p-phase">${PHASES.map(ph=>`<option ${d.phase===ph?"selected":""}>${ph}</option>`).join("")}</select></div>
       <div class="grid2" style="margin-bottom:10px;">
-        <div><div class="lbl">Daily Loss Limit (%)</div><input id="p-daily" value="${d.dailyLossLimit}"></div>
-        <div><div class="lbl">Max Drawdown (%)</div><input id="p-dd" value="${d.maxDrawdown}"></div>
+        <div><div class="lbl">${t("fld_daily_limit")}</div><input id="p-daily" value="${d.dailyLossLimit}"></div>
+        <div><div class="lbl">${t("fld_max_dd")}</div><input id="p-dd" value="${d.maxDrawdown}"></div>
       </div>
-      <div style="margin-bottom:18px;"><div class="lbl">Profit Target (%)</div><input id="p-target" value="${d.profitTarget}"></div>
-      <button class="btn-primary" id="save-prop-btn">Save Account</button>
+      <div style="margin-bottom:18px;"><div class="lbl">${t("fld_profit_target")}</div><input id="p-target" value="${d.profitTarget}"></div>
+      <button class="btn-primary" id="save-prop-btn">${t("save_account")}</button>
     </div>`;
   }
   const netPnl = state.trades.filter(t=>t.result).reduce((s,t)=>s+(Number(t.pnl)||0),0);
@@ -689,26 +1325,26 @@ function renderProp(){
   const breached = todayLoss>=dailyLossAmt || maxDD>=p.maxDrawdown;
   return `<div>
     <div style="display:flex; justify-content:space-between; align-items:center;">
-      <div class="sub" style="margin:0;">${p.phase} · $${p.accountSize.toLocaleString()} account</div>
-      <button data-editprop style="background:none;border:none;color:var(--text-mid);font-size:12px; font-family:'SF Mono',monospace;">Edit</button>
+      <div class="sub" style="margin:0;">${p.phase} · $${p.accountSize.toLocaleString()}</div>
+      <button data-editprop style="background:none;border:none;color:var(--text-mid);font-size:12px; font-family:'SF Mono',monospace;">${t("edit")}</button>
     </div>
     <div class="card" style="margin-bottom:12px;">
-      <div class="lbl">Current Balance</div>
+      <div class="lbl">${t("cur_balance")}</div>
       <div class="mono" style="font-size:23px; font-weight:700; color:${netPnl>=0?'var(--green)':'var(--red)'};">$${currentBalance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-      <div class="sub" style="margin:2px 0 0;">${fmtMoney(netPnl)} since start</div>
+      <div class="sub" style="margin:2px 0 0;">${fmtMoney(netPnl)} ${t("since_start")}</div>
     </div>
     <div class="card" style="margin-bottom:12px;">
-      <div class="section-lbl">Profit Target Progress</div>
-      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">$${netPnl.toFixed(0)} of $${targetAmt.toFixed(0)}</span><span style="color:var(--gold);">${progressPct.toFixed(0)}%</span></div>
+      <div class="section-lbl">${t("target_progress")}</div>
+      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">$${netPnl.toFixed(0)} / $${targetAmt.toFixed(0)}</span><span style="color:var(--gold);">${progressPct.toFixed(0)}%</span></div>
       <div class="progress-track"><div class="progress-fill" style="width:${progressPct}%; background:var(--gold);"></div></div>
     </div>
     <div class="card">
-      <div class="section-lbl">Risk Limits</div>
-      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">Daily Loss Used</span><span style="color:${dailyPct>80?'var(--red)':'var(--gold)'};">${todayLoss.toFixed(1)} / ${dailyLossAmt.toFixed(0)}</span></div>
+      <div class="section-lbl">${t("risk_limits")}</div>
+      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">${t("daily_loss_used")}</span><span style="color:${dailyPct>80?'var(--red)':'var(--gold)'};">${todayLoss.toFixed(1)} / ${dailyLossAmt.toFixed(0)}</span></div>
       <div class="progress-track" style="margin-bottom:12px;"><div class="progress-fill" style="width:${dailyPct}%; background:${dailyPct>80?'var(--red)':'var(--gold)'};"></div></div>
-      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">Drawdown Used (%)</span><span style="color:${ddPct>80?'var(--red)':'var(--gold)'};">${maxDD.toFixed(1)} / ${p.maxDrawdown}</span></div>
+      <div style="display:flex; justify-content:space-between; font-size:11px; font-family:'SF Mono',monospace; margin-bottom:5px;"><span style="color:var(--text-mid);">${t("dd_used")}</span><span style="color:${ddPct>80?'var(--red)':'var(--gold)'};">${maxDD.toFixed(1)} / ${p.maxDrawdown}</span></div>
       <div class="progress-track"><div class="progress-fill" style="width:${ddPct}%; background:${ddPct>80?'var(--red)':'var(--gold)'};"></div></div>
-      ${breached?`<div style="display:flex;align-items:center;gap:6px;color:var(--red);font-size:12px;font-weight:500;margin-top:10px;">⚠ Risk limit breached</div>`:""}
+      ${breached?`<div style="display:flex;align-items:center;gap:6px;color:var(--red);font-size:12px;font-weight:500;margin-top:10px;">${t("risk_breached")}</div>`:""}
     </div>
   </div>`;
 }
@@ -720,16 +1356,52 @@ function renderNav(){
   return `
   <button class="fab" id="fab-add">${ICONS.plus}</button>
   <nav class="navbar">
-    ${item("dashboard",ICONS.dash,"Dashboard")}
-    ${item("journal",ICONS.book,"Journal")}
-    ${item("accounts",ICONS.shield,"Hisob")}
-    ${item("terms",ICONS.book2,"Terminlar")}
+    ${item("dashboard",ICONS.dash,t("nav_dashboard"))}
+    ${item("journal",ICONS.book,t("nav_journal"))}
+    ${item("accounts",ICONS.shield,t("nav_accounts"))}
+    ${item("terms",ICONS.book2,t("nav_terms"))}
   </nav>`;
 }
 
 /* ---- ICT terms library screen ---- */
+/* ---- Settings (ICT Terms + Psychology + Screenshot Gallery) ---- */
+if(!state.settingsSubTab) state.settingsSubTab = "ict";
+
 function renderTerms(){
-  const selected = new Set(loadCustomConcepts() || CONCEPTS_DEFAULT);
+  const tabs=[["ict","settings_ict"],["psych","settings_psych"],["gallery","settings_gallery"],["sections","settings_sections"]];
+  const subSwitch = `
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:16px;">
+      ${tabs.map(([id,key])=>`<button type="button" data-settingstab="${id}" style="border-radius:7px; padding:9px; font-size:12.5px; font-family:'SF Mono',monospace; border:1px solid var(--border-l); background:${state.settingsSubTab===id?'rgba(63,182,139,.1)':'var(--surface2)'}; border-color:${state.settingsSubTab===id?'rgba(63,182,139,.5)':'var(--border-l)'}; color:${state.settingsSubTab===id?'var(--green)':'var(--text-dim)'};">${t(key)}</button>`).join("")}
+    </div>`;
+  let body="";
+  if(state.settingsSubTab==="ict") body=renderIctSettings();
+  else if(state.settingsSubTab==="psych") body=renderPsychSettings();
+  else if(state.settingsSubTab==="sections") body=renderSectionsSettings();
+  else body=renderGallery();
+  return `<div>
+    <h1 class="disp">${t("nav_terms")}</h1>
+    ${subSwitch}
+    ${body}
+  </div>`;
+}
+
+function renderSectionsSettings(){
+  const row=(label, key, getter)=>`
+    <div class="card" style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:13px; font-weight:600;">${label}</div>
+        <button type="button" data-sectiontoggle="${key}" style="background:${getter()?'rgba(63,182,139,.15)':'rgba(229,72,77,.12)'}; border:1px solid ${getter()?'rgba(63,182,139,.5)':'rgba(229,72,77,.4)'}; color:${getter()?'var(--green)':'var(--red)'}; border-radius:20px; padding:6px 14px; font-size:11.5px; font-family:'SF Mono',monospace; font-weight:600;">${getter()?t("on_label"):t("off_label")}</button>
+      </div>
+    </div>`;
+  return `<div>
+    <p class="sub">${t("sections_sub")}</p>
+    ${row(t("sections_notes_label"), "notes", showNotes)}
+    ${row(t("sections_shots_label"), "shots", showShots)}
+  </div>`;
+}
+
+function renderIctSettings(){
+  const selected = new Set(loadCustomConcepts() || []);
   const categories = Object.entries(ICT_LIBRARY).map(([cat, terms])=>{
     return `<div class="card" style="margin-bottom:10px;">
       <div class="section-lbl">${cat}</div>
@@ -739,15 +1411,62 @@ function renderTerms(){
     </div>`;
   }).join("");
   return `<div>
-    <h1 class="disp">ICT Terminlar</h1>
-    <p class="sub">Kerakli terminlarni tanlang — ular savdo shaklidagi checklist'ga chiqadi.</p>
+    <p class="sub">${t("terms_sub")}</p>
     <div class="row" style="margin-bottom:14px;">
-      <button class="btn-ghost" style="flex:1;" id="terms-selectall">Hammasini tanlash</button>
-      <button class="btn-ghost" style="flex:1;" id="terms-clear">Tozalash</button>
+      <button class="btn-ghost" style="flex:1;" id="terms-selectall">${t("select_all")}</button>
+      <button class="btn-ghost" style="flex:1;" id="terms-clear">${t("clear_all")}</button>
     </div>
     <div id="terms-list">${categories}</div>
     <div class="sticky-save">
-      <button class="btn-primary" id="terms-save-btn">Saqlash (<span id="terms-count">${selected.size}</span> ta tanlangan)</button>
+      <button class="btn-primary" id="terms-save-btn">${t("save_terms")(selected.size)}</button>
+    </div>
+  </div>`;
+}
+
+function renderPsychSettings(){
+  const selEmotions = new Set(getActiveEmotions());
+  const selMistakes = new Set(getActiveMistakes());
+  return `<div>
+    <div class="card" style="margin-bottom:12px;">
+      <div class="section-lbl">${t("psych_emotions_title")}</div>
+      <p class="sub" style="margin:-2px 0 10px;">${t("psych_emotions_sub")}</p>
+      <div class="chip-group" id="psych-emotions">
+        ${EMOTIONS_LIBRARY.map(e=>`<button type="button" data-pemotion="${esc(e)}" class="chip ${selEmotions.has(e)?"active-gold":""}">${e}</button>`).join("")}
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="section-lbl">${t("psych_mistakes_title")}</div>
+      <p class="sub" style="margin:-2px 0 10px;">${t("psych_mistakes_sub")}</p>
+      <div class="chip-group" id="psych-mistakes">
+        ${MISTAKES_LIBRARY.map(m=>`<button type="button" data-pmistake="${esc(m)}" class="chip ${selMistakes.has(m)?"active-red":""}">${m}</button>`).join("")}
+      </div>
+    </div>
+    <div class="sticky-save">
+      <button class="btn-primary" id="psych-save-btn">${t("save_psych")}</button>
+    </div>
+  </div>`;
+}
+
+function renderGallery(){
+  const shots=[];
+  [...state.trades].sort((a,b)=>new Date(b.datetime)-new Date(a.datetime)).forEach(tr=>{
+    if(tr.before) shots.push({url:tr.before, pair:tr.pair, date:tr.datetime, label:t("gallery_before"), id:tr.id});
+    if(tr.after) shots.push({url:tr.after, pair:tr.pair, date:tr.datetime, label:t("gallery_after"), id:tr.id});
+  });
+  if(shots.length===0){
+    return `<div class="empty-state">${t("gallery_empty")}</div>`;
+  }
+  return `<div>
+    <p class="sub">${t("gallery_sub")}</p>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+      ${shots.map((s,i)=>`
+        <div data-gallery-img="${i}" style="position:relative; border-radius:10px; overflow:hidden; border:1px solid var(--border); cursor:pointer;">
+          <img src="${s.url}" style="width:100%; aspect-ratio:1; object-fit:cover; display:block;">
+          <div style="position:absolute; bottom:0; left:0; right:0; background:linear-gradient(to top, rgba(0,0,0,.75), transparent); padding:16px 8px 6px;">
+            <div style="font-size:10px; font-weight:600; color:#fff;">${esc(s.pair)} · ${s.label}</div>
+            <div style="font-size:9px; color:rgba(255,255,255,.7);">${new Date(s.date).toLocaleDateString()}</div>
+          </div>
+        </div>`).join("")}
     </div>
   </div>`;
 }
@@ -755,6 +1474,8 @@ function renderTerms(){
 /* ---------------- form logic ---------------- */
 function afterFormRender(){
   const rrDisplay=document.getElementById("f-rr-display");
+  const pnlField=document.getElementById("f-pnl");
+  const pnlHint=document.getElementById("f-pnl-hint");
   const recalcRR=()=>{
     const e=parseFloat(document.getElementById("f-entry").value);
     const sl=parseFloat(document.getElementById("f-sl").value);
@@ -764,14 +1485,66 @@ function afterFormRender(){
       rrDisplay.textContent="1:"+rr; rrDisplay.dataset.val=rr;
     } else { rrDisplay.textContent="—"; rrDisplay.dataset.val=""; }
   };
-  ["f-entry","f-sl","f-tp"].forEach(id=>document.getElementById(id).addEventListener("input",recalcRR));
-  recalcRR();
+  // BUGFIX: previously this auto-calc ran unconditionally on every open,
+  // silently overwriting a real, already-saved P/L (e.g. partial close,
+  // slippage, commission) the instant someone reopened a trade to edit it.
+  // Now it only auto-fills for brand-new trades, and stops touching the
+  // field the moment the person types into it themselves.
+  let pnlDirty = !!(state.draft && state.draft.id);
+  if(pnlField) pnlField.addEventListener("input", ()=>{ pnlDirty=true; if(pnlHint) pnlHint.textContent=""; });
+  const recalcPnL=()=>{
+    if(pnlDirty || !pnlField) return;
+    const pair=document.getElementById("f-pair").value;
+    const entry=document.getElementById("f-entry").value;
+    const sl=document.getElementById("f-sl").value;
+    const tp=document.getElementById("f-tp").value;
+    const lot=document.getElementById("f-lot").value;
+    let exitPrice = curResult==="Win" ? tp : curResult==="Loss" ? sl : entry;
+    const est = calcAutoPnL(pair, curDir, entry, exitPrice, lot);
+    if(est!==null){
+      pnlField.value = est.toFixed(2);
+      if(pnlHint) pnlHint.textContent = t("pnl_auto_hint");
+    } else if(pnlHint){ pnlHint.textContent=""; }
+  };
+  ["f-entry","f-sl","f-tp"].forEach(id=>document.getElementById(id).addEventListener("input",()=>{ recalcRR(); recalcPnL(); }));
+  document.getElementById("f-lot").addEventListener("input",recalcPnL);
+  document.getElementById("f-pair").addEventListener("input",recalcPnL);
+  recalcRR(); recalcPnL();
 
-  document.getElementById("f-discipline").addEventListener("input",e=>{ document.getElementById("f-disc-val").textContent=e.target.value; });
+  const disciplineInput=document.getElementById("f-discipline");
+  if(disciplineInput) disciplineInput.addEventListener("input",e=>{ document.getElementById("f-disc-val").textContent=e.target.value; });
+
+  let curEmotion=(state.draft&&state.draft.emotion)||null;
+  const selectEmotionChip=(btn)=>{
+    const val=btn.dataset.emotion;
+    curEmotion = (curEmotion===val) ? null : val;
+    document.querySelectorAll("#f-emotion [data-emotion]").forEach(b=>{
+      b.classList.toggle("active-gold", b.dataset.emotion===curEmotion);
+    });
+  };
+  document.querySelectorAll("#f-emotion [data-emotion]").forEach(btn=>btn.addEventListener("click",()=>selectEmotionChip(btn)));
+  const addEmotionBtn=document.getElementById("add-emotion-btn");
+  if(addEmotionBtn) addEmotionBtn.addEventListener("click",()=>{
+    const val=prompt(t("prompt_new_term"));
+    if(!val||!val.trim()) return;
+    const term=val.trim();
+    const container=document.getElementById("f-emotion");
+    const existing=[...container.querySelectorAll("[data-emotion]")].find(b=>b.dataset.emotion.toLowerCase()===term.toLowerCase());
+    if(existing){ selectEmotionChip(existing); }
+    else{
+      const btn=document.createElement("button");
+      btn.type="button"; btn.dataset.emotion=term; btn.className="chip"; btn.textContent=term;
+      btn.addEventListener("click",()=>selectEmotionChip(btn));
+      container.insertBefore(btn, addEmotionBtn);
+      selectEmotionChip(btn);
+      saveActiveEmotions([...new Set([...getActiveEmotions(), term])]);
+    }
+  });
 
   document.querySelectorAll("[data-dir]").forEach(btn=>btn.addEventListener("click",()=>{
     curDir=btn.dataset.dir;
     document.querySelectorAll("[data-dir]").forEach(b=>b.className=b.dataset.dir===curDir?(curDir==="Buy"?"on-green":"on-red"):"");
+    recalcPnL();
   }));
 
   document.querySelectorAll("[data-result]").forEach(btn=>btn.addEventListener("click",()=>{
@@ -782,6 +1555,7 @@ function afterFormRender(){
       if(r===curResult) cls+= (r==="Loss"?" active-red":" active-gold");
       b.className=cls; b.style.flex="1";
     });
+    recalcPnL();
   }));
   document.querySelectorAll("#f-result .chip").forEach(b=>b.style.flex="1");
 
@@ -791,6 +1565,27 @@ function afterFormRender(){
     if(curConcepts.has(c)){curConcepts.delete(c); btn.classList.remove("active-gold");}
     else{curConcepts.add(c); btn.classList.add("active-gold");}
   }));
+  const addConceptBtn=document.getElementById("add-concept-btn");
+  if(addConceptBtn) addConceptBtn.addEventListener("click",()=>{
+    const val=prompt(t("prompt_new_term"));
+    if(!val||!val.trim()) return;
+    const term=val.trim();
+    const container=document.getElementById("f-concepts");
+    const existing=[...container.querySelectorAll("[data-concept]")].find(b=>b.dataset.concept.toLowerCase()===term.toLowerCase());
+    if(existing){
+      if(!curConcepts.has(existing.dataset.concept)){ curConcepts.add(existing.dataset.concept); existing.classList.add("active-gold"); }
+    } else {
+      const btn=document.createElement("button");
+      btn.type="button"; btn.dataset.concept=term; btn.className="chip active-gold"; btn.textContent=term;
+      btn.addEventListener("click",()=>{
+        if(curConcepts.has(term)){curConcepts.delete(term); btn.classList.remove("active-gold");}
+        else{curConcepts.add(term); btn.classList.add("active-gold");}
+      });
+      container.insertBefore(btn, addConceptBtn);
+      curConcepts.add(term);
+      saveCustomConcepts([...new Set([...getActiveConcepts(), term])]);
+    }
+  });
 
   let curMistakes=new Set((state.draft&&state.draft.mistakes)||[]);
   document.querySelectorAll("[data-mistake]").forEach(btn=>btn.addEventListener("click",()=>{
@@ -798,11 +1593,33 @@ function afterFormRender(){
     if(curMistakes.has(m)){curMistakes.delete(m); btn.classList.remove("active-red");}
     else{curMistakes.add(m); btn.classList.add("active-red");}
   }));
+  const addMistakeBtn=document.getElementById("add-mistake-btn");
+  if(addMistakeBtn) addMistakeBtn.addEventListener("click",()=>{
+    const val=prompt(t("prompt_new_mistake"));
+    if(!val||!val.trim()) return;
+    const term=val.trim();
+    const container=document.getElementById("f-mistakes");
+    const existing=[...container.querySelectorAll("[data-mistake]")].find(b=>b.dataset.mistake.toLowerCase()===term.toLowerCase());
+    if(existing){
+      if(!curMistakes.has(existing.dataset.mistake)){ curMistakes.add(existing.dataset.mistake); existing.classList.add("active-red"); }
+    } else {
+      const btn=document.createElement("button");
+      btn.type="button"; btn.dataset.mistake=term; btn.className="chip active-red"; btn.textContent=term;
+      btn.addEventListener("click",()=>{
+        if(curMistakes.has(term)){curMistakes.delete(term); btn.classList.remove("active-red");}
+        else{curMistakes.add(term); btn.classList.add("active-red");}
+      });
+      container.insertBefore(btn, addMistakeBtn);
+      curMistakes.add(term);
+      saveCustomMistakes([...new Set([...getActiveMistakes(), term])]);
+    }
+  });
 
   let beforeImg=(state.draft&&state.draft.before)||null;
   let afterImg=(state.draft&&state.draft.after)||null;
   function wireDrop(dropId, fileId, which){
     const drop=document.getElementById(dropId), file=document.getElementById(fileId);
+    if(!drop || !file) return;
     drop.addEventListener("click",(e)=>{ if(e.target.closest("[data-rmimg]")) return; file.click(); });
     file.addEventListener("change", async ()=>{
       const f=file.files[0]; if(!f) return;
@@ -811,8 +1628,8 @@ function afterFormRender(){
         const b64=await compressImage(f);
         if(which==="before") beforeImg=b64; else afterImg=b64;
         drop.innerHTML=`<img src="${b64}"><button type="button" class="rm" data-rmimg="${which}">${ICONS.x}</button>`;
-        drop.querySelector("[data-rmimg]").addEventListener("click",(e)=>{ e.stopPropagation(); if(which==="before"){beforeImg=null;} else {afterImg=null;} drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`; });
-      }catch(err){ alert("Couldn't read that image."); drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`; }
+        drop.querySelector("[data-rmimg]").addEventListener("click",(e)=>{ e.stopPropagation(); if(which==="before"){beforeImg=null;} else {afterImg=null;} drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`; });
+      }catch(err){ alert(t("err_read_image")); drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`; }
     });
   }
   wireDrop("drop-before","file-before","before");
@@ -820,48 +1637,167 @@ function afterFormRender(){
   document.querySelectorAll("[data-rmimg]").forEach(btn=>btn.addEventListener("click",(e)=>{
     e.stopPropagation();
     const which=btn.dataset.rmimg;
-    if(which==="before"){beforeImg=null; document.getElementById("drop-before").innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`;}
-    else {afterImg=null; document.getElementById("drop-after").innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">Upload</span></div>`;}
+    if(which==="before"){beforeImg=null; document.getElementById("drop-before").innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`;}
+    else {afterImg=null; document.getElementById("drop-after").innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`;}
   }));
 
+  const snapshotDraft=()=>{
+    const val=(id, fallback)=>{ const el=document.getElementById(id); return el ? el.value : fallback; };
+    const prev = state.draft || {};
+    return {
+      id: prev.id,
+      pair: val("f-pair", prev.pair||""),
+      datetime: val("f-datetime", prev.datetime),
+      session: val("f-session", prev.session),
+      direction: curDir,
+      entryPrice: val("f-entry", prev.entryPrice),
+      stopLoss: val("f-sl", prev.stopLoss),
+      takeProfit: val("f-tp", prev.takeProfit),
+      riskPercent: val("f-risk", prev.riskPercent),
+      lotSize: val("f-lot", prev.lotSize),
+      rr: (rrDisplay && rrDisplay.dataset.val) || prev.rr || "",
+      result: curResult,
+      pnl: val("f-pnl", prev.pnl),
+      notes: val("f-notes", prev.notes||""),
+      concepts: [...curConcepts],
+      emotion: curEmotion||"",
+      disciplineScore: val("f-discipline", prev.disciplineScore),
+      mistakes: [...curMistakes],
+      lessons: val("f-lessons", prev.lessons||""),
+      before: beforeImg,
+      after: afterImg,
+      createdAt: prev.createdAt,
+    };
+  };
+
   document.getElementById("save-trade-btn").addEventListener("click",()=>{
-    const pair=document.getElementById("f-pair").value.trim();
-    if(!pair){ alert("Enter a pair symbol."); return; }
+    const draft=snapshotDraft();
+    const pair=(draft.pair||"").trim();
+    if(!pair){ alert(t("err_enter_pair")); return; }
     const trade={
-      id:(state.draft&&state.draft.id)||uid(),
-      pair:pair.toUpperCase(),
-      datetime:document.getElementById("f-datetime").value,
-      session:document.getElementById("f-session").value,
-      direction:curDir,
-      entryPrice:document.getElementById("f-entry").value,
-      stopLoss:document.getElementById("f-sl").value,
-      takeProfit:document.getElementById("f-tp").value,
-      riskPercent:document.getElementById("f-risk").value,
-      lotSize:document.getElementById("f-lot").value,
-      rr:rrDisplay.dataset.val||(state.draft&&state.draft.rr)||"",
-      result:curResult,
-      pnl:parseFloat(document.getElementById("f-pnl").value)||0,
-      notes:document.getElementById("f-notes").value.trim(),
-      concepts:[...curConcepts],
-      emotion:document.getElementById("f-emotion").value,
-      disciplineScore:document.getElementById("f-discipline").value,
-      mistakes:[...curMistakes],
-      lessons:document.getElementById("f-lessons").value.trim(),
-      before:beforeImg, after:afterImg,
-      createdAt:(state.draft&&state.draft.createdAt)||Date.now(),
+      id: draft.id || uid(),
+      pair: pair.toUpperCase(),
+      datetime: draft.datetime,
+      session: draft.session,
+      direction: draft.direction,
+      entryPrice: draft.entryPrice,
+      stopLoss: draft.stopLoss,
+      takeProfit: draft.takeProfit,
+      riskPercent: draft.riskPercent,
+      lotSize: draft.lotSize,
+      rr: draft.rr,
+      result: draft.result,
+      pnl: parseFloat(draft.pnl)||0,
+      notes: (draft.notes||"").trim(),
+      concepts: draft.concepts,
+      emotion: draft.emotion,
+      disciplineScore: draft.disciplineScore,
+      mistakes: draft.mistakes,
+      lessons: (draft.lessons||"").trim(),
+      before: draft.before, after: draft.after,
+      createdAt: draft.createdAt || Date.now(),
     };
     const exists=state.trades.some(t=>t.id===trade.id);
     const next = exists? state.trades.map(t=>t.id===trade.id?trade:t) : [trade,...state.trades];
     next.sort((a,b)=>new Date(b.datetime)-new Date(a.datetime));
-    if(!saveTrades(next)){ alert("Couldn't save — storage might be full. Try removing a screenshot."); return; }
+    if(!saveTrades(next)){ alert(t("err_storage_full")); return; }
     state.trades=next; state.activeId=trade.id; state.view="detail"; state.tab="journal"; state.draft=null;
     render();
   });
+
+  // reveal Notes / Screenshots sections in place, without losing what's already typed
+  document.querySelectorAll("[data-inlineshow]").forEach(b=>b.addEventListener("click",()=>{
+    const which=b.dataset.inlineshow;
+    state.draft = snapshotDraft();
+    if(which==="notes") setShowNotes(true);
+    if(which==="shots") setShowShots(true);
+    render();
+  }));
 }
 
 /* ---------------- global handlers ---------------- */
 function attachGlobalHandlers(){
   document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{ state.tab=b.dataset.tab; state.view="list"; render(); }));
+  document.querySelectorAll("[data-lang]").forEach(b=>b.addEventListener("click",()=>{ state.lang=b.dataset.lang; saveLang(state.lang); render(); }));
+
+  // CSV / MT5 import
+  const importBtn=document.getElementById("import-csv-btn");
+  const importFile=document.getElementById("import-csv-file");
+  if(importBtn && importFile){
+    importBtn.addEventListener("click",()=>importFile.click());
+    importFile.addEventListener("change",()=>{
+      const f=importFile.files[0]; if(!f) return;
+      const reader=new FileReader();
+      reader.onload=(e)=>{
+        const { headers, rows } = parseCSV(e.target.result);
+        if(headers.length===0 || rows.length===0){ alert(t("import_no_data")); return; }
+        state.importData = { headers, rows, mapping: autoMapMT5(headers) };
+        state.view="import";
+        render();
+      };
+      reader.readAsText(f);
+    });
+  }
+  document.querySelectorAll("[data-mapfield]").forEach(sel=>sel.addEventListener("change",()=>{
+    if(state.importData) state.importData.mapping[sel.dataset.mapfield] = parseInt(sel.value);
+  }));
+  const importConfirmBtn=document.getElementById("import-confirm-btn");
+  if(importConfirmBtn) importConfirmBtn.addEventListener("click",()=>{
+    // read the *current* dropdown values directly, in case the user changed them
+    const mapping={};
+    document.querySelectorAll("[data-mapfield]").forEach(sel=>{ mapping[sel.dataset.mapfield]=parseInt(sel.value); });
+    const { rows } = state.importData;
+    const existingKeys = new Set(state.trades.map(tr=>`${(tr.pair||"").toUpperCase()}|${tr.datetime}|${tr.entryPrice}`));
+    let imported=0, skipped=0;
+    const newTrades=[];
+    rows.forEach(r=>{
+      const get=(key)=>{ const i=mapping[key]; return (i!==undefined && i>=0) ? (r[i]||"").trim() : ""; };
+      const typeRaw = get("direction").toLowerCase();
+      // skip non-trade rows: balance ops, deposits, credits (common in MT5 full history export)
+      if(/balance|deposit|credit|withdraw|баланс|депозит|кредит/.test(typeRaw)){ skipped++; return; }
+      const pairRaw = get("pair");
+      const dt = parseMT5Date(get("datetime"));
+      if(!pairRaw || !dt){ skipped++; return; }
+      const entryPrice = get("entry");
+      const dedupeKey = `${pairRaw.toUpperCase()}|${dt.toISOString().slice(0,16)}|${entryPrice}`;
+      if(existingKeys.has(dedupeKey)){ skipped++; return; }
+      existingKeys.add(dedupeKey);
+      const pnlVal = parseFloat(get("pnl"))||0;
+      const direction = /sell|продажа/.test(typeRaw) ? "Sell" : "Buy";
+      const now=Date.now();
+      newTrades.push({
+        id: uid(),
+        pair: pairRaw.toUpperCase(),
+        datetime: `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}T${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`,
+        session: sessionForHour(dt.getHours()),
+        direction,
+        entryPrice: entryPrice||"",
+        stopLoss: get("sl")||"",
+        takeProfit: get("tp")||"",
+        riskPercent: "",
+        lotSize: get("lot")||"",
+        rr: "",
+        result: pnlVal>0?"Win":pnlVal<0?"Loss":"Break Even",
+        pnl: pnlVal,
+        notes: get("comment")||"",
+        concepts: [],
+        emotion: "",
+        disciplineScore: "",
+        mistakes: [],
+        lessons: "",
+        before: null, after: null,
+        createdAt: now, updatedAt: now,
+      });
+      imported++;
+    });
+    const merged=[...newTrades, ...state.trades].sort((a,b)=>new Date(b.datetime)-new Date(a.datetime));
+    if(imported>0) saveTrades(merged);
+    state.trades = imported>0 ? merged : state.trades;
+    state.importData=null; state.view="list"; state.tab="journal";
+    render();
+    alert(t("import_success")(imported, skipped));
+  });
+
   const fab=document.getElementById("fab-add");
   if(fab) fab.addEventListener("click",()=>{ state.draft=null; state.view="form"; render(); });
   document.querySelectorAll("[data-opentrade]").forEach(c=>c.addEventListener("click",(e)=>{
@@ -870,7 +1806,7 @@ function attachGlobalHandlers(){
   }));
   document.querySelectorAll("[data-deltrade]").forEach(b=>b.addEventListener("click",(e)=>{
     e.stopPropagation();
-    if(!confirm("Delete this trade?")) return;
+    if(!confirm(t("del_msg"))) return;
     const id=b.dataset.deltrade;
     state.trades=state.trades.filter(t=>t.id!==id); saveTrades(state.trades);
     if(state.activeId===id){ state.activeId=null; state.view="list"; }
@@ -942,16 +1878,19 @@ function attachGlobalHandlers(){
     state.real=r; saveReal(r); state.view="list"; render();
   });
 
-  // jump from trade form to Terms tab
+  // jump from trade form to Settings (ICT or Psychology sub-tab)
   document.querySelectorAll("[data-goto-terms]").forEach(b=>b.addEventListener("click",()=>{
-    state.tab="terms"; state.view="list"; state.draft=null; render();
+    state.settingsSubTab="ict"; state.tab="terms"; state.view="list"; state.draft=null; render();
+  }));
+  document.querySelectorAll("[data-goto-psych]").forEach(b=>b.addEventListener("click",()=>{
+    state.settingsSubTab="psych"; state.tab="terms"; state.view="list"; state.draft=null; render();
   }));
 
   // ICT terms library screen
   const termsList=document.getElementById("terms-list");
   if(termsList){
-    let selected=new Set(loadCustomConcepts() || CONCEPTS_DEFAULT);
-    const updateCount=()=>{ const el=document.getElementById("terms-count"); if(el) el.textContent=selected.size; };
+    let selected=new Set(loadCustomConcepts() || []);
+    const updateCount=()=>{ const btn=document.getElementById("terms-save-btn"); if(btn) btn.textContent=t("save_terms")(selected.size); };
     termsList.querySelectorAll("[data-term]").forEach(chip=>chip.addEventListener("click",()=>{
       const term=chip.dataset.term;
       if(selected.has(term)){ selected.delete(term); chip.classList.remove("active-gold"); }
@@ -973,9 +1912,57 @@ function attachGlobalHandlers(){
     const saveTermsBtn=document.getElementById("terms-save-btn");
     if(saveTermsBtn) saveTermsBtn.addEventListener("click",()=>{
       saveCustomConcepts([...selected]);
-      alert("Saqlandi! Endi savdo qo'shishda shu terminlar ko'rinadi.");
+      alert(t("terms_saved"));
     });
   }
+
+  // settings sub-tab switcher (ICT / Psychology / Gallery / Sections)
+  document.querySelectorAll("[data-settingstab]").forEach(b=>b.addEventListener("click",()=>{
+    state.settingsSubTab=b.dataset.settingstab; render();
+  }));
+
+  // section on/off toggles (Notes, Screenshots)
+  document.querySelectorAll("[data-sectiontoggle]").forEach(b=>b.addEventListener("click",()=>{
+    const key=b.dataset.sectiontoggle;
+    if(key==="notes") setShowNotes(!showNotes());
+    if(key==="shots") setShowShots(!showShots());
+    render();
+  }));
+
+  // psychology picker (emotions + mistakes)
+  const psychEmotions=document.getElementById("psych-emotions");
+  const psychMistakes=document.getElementById("psych-mistakes");
+  if(psychEmotions || psychMistakes){
+    const selEmotions=new Set(getActiveEmotions());
+    const selMistakes=new Set(getActiveMistakes());
+    if(psychEmotions) psychEmotions.querySelectorAll("[data-pemotion]").forEach(chip=>chip.addEventListener("click",()=>{
+      const v=chip.dataset.pemotion;
+      if(selEmotions.has(v)){ selEmotions.delete(v); chip.classList.remove("active-gold"); }
+      else{ selEmotions.add(v); chip.classList.add("active-gold"); }
+    }));
+    if(psychMistakes) psychMistakes.querySelectorAll("[data-pmistake]").forEach(chip=>chip.addEventListener("click",()=>{
+      const v=chip.dataset.pmistake;
+      if(selMistakes.has(v)){ selMistakes.delete(v); chip.classList.remove("active-red"); }
+      else{ selMistakes.add(v); chip.classList.add("active-red"); }
+    }));
+    const psychSaveBtn=document.getElementById("psych-save-btn");
+    if(psychSaveBtn) psychSaveBtn.addEventListener("click",()=>{
+      saveActiveEmotions([...selEmotions]);
+      saveCustomMistakes([...selMistakes]);
+      alert(t("psych_saved"));
+    });
+  }
+
+  // screenshot gallery lightbox
+  document.querySelectorAll("[data-gallery-img]").forEach(cell=>cell.addEventListener("click",()=>{
+    const img=cell.querySelector("img");
+    if(!img) return;
+    const overlay=document.createElement("div");
+    overlay.style.cssText="position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:999; display:flex; align-items:center; justify-content:center; padding:20px;";
+    overlay.innerHTML=`<img src="${img.src}" style="max-width:100%; max-height:100%; border-radius:8px; object-fit:contain;">`;
+    overlay.addEventListener("click",()=>overlay.remove());
+    document.body.appendChild(overlay);
+  }));
 }
 
 /* ---------------- telegram integration ---------------- */
