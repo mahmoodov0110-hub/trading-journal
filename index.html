@@ -5,6 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ICT Trading Journal</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBBa0zs_0yuAm6yWEk8dES6PDTj8aP4baw",
+    authDomain: "alphajournal-cf4f8.firebaseapp.com",
+    projectId: "alphajournal-cf4f8",
+    storageBucket: "alphajournal-cf4f8.firebasestorage.app",
+    messagingSenderId: "950476955330",
+    appId: "1:950476955330:web:bf3c23acd8a1f8b762e55b",
+    measurementId: "G-YDVBSEJWHK"
+  };
+  let fbApp=null, fbAuth=null, fbDB=null, FIREBASE_READY=false;
+  try{
+    fbApp = firebase.initializeApp(firebaseConfig);
+    fbAuth = firebase.auth();
+    fbDB = firebase.firestore();
+    FIREBASE_READY = true;
+  }catch(e){ console.error("Firebase init failed:", e); }
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght=500;600;700&family=Inter:wght=400;500;600;700&display=swap');
   :root{
@@ -81,6 +102,87 @@
 <script>
 /* ---------------- config ---------------- */
 const SESSIONS=["Asia","London","New York"];
+
+/* ---------------- Google auth + cloud sync (Firebase) ---------------- */
+const ADMIN_EMAIL = "mahmoodov0110@gmail.com";
+let fbUser = null; // set by onAuthStateChanged
+
+function isAdmin(){ return !!(fbUser && fbUser.email === ADMIN_EMAIL); }
+
+/* Push local trades + a lightweight profile summary to Firestore.
+   Best-effort: never blocks the UI and never throws to the caller —
+   the app must keep working perfectly offline even if this fails. */
+async function cloudSync(){
+  if(!FIREBASE_READY || !fbUser) return;
+  try{
+    const stats = computeStats();
+    await fbDB.collection("users").doc(fbUser.uid).set({
+      email: fbUser.email || "",
+      displayName: fbUser.displayName || "",
+      photoURL: fbUser.photoURL || "",
+      lastActive: firebase.firestore.FieldValue.serverTimestamp(),
+      tradeCount: state.trades.length,
+      netPnl: stats.netPnl || 0,
+      winRate: stats.winRate || 0,
+    }, { merge:true });
+
+    const batch = fbDB.batch();
+    const tradesRef = fbDB.collection("users").doc(fbUser.uid).collection("trades");
+    state.trades.forEach(tr=>{ batch.set(tradesRef.doc(tr.id), tr); });
+    await batch.commit();
+  }catch(e){ console.error("cloudSync failed:", e); }
+}
+
+/* Pull this account's trades down from Firestore — used right after sign-in
+   so a person's history follows them to a new device/browser. Merges with
+   whatever's already stored locally (cloud trades win on id conflicts). */
+async function cloudPull(){
+  if(!FIREBASE_READY || !fbUser) return;
+  try{
+    const snap = await fbDB.collection("users").doc(fbUser.uid).collection("trades").get();
+    if(snap.empty) return;
+    const cloudTrades = snap.docs.map(d=>d.data());
+    const localIds = new Set(state.trades.map(t=>t.id));
+    const merged = [...state.trades];
+    cloudTrades.forEach(ct=>{
+      const idx = merged.findIndex(t=>t.id===ct.id);
+      if(idx===-1) merged.push(ct); else merged[idx]=ct;
+    });
+    merged.sort((a,b)=>new Date(b.datetime)-new Date(a.datetime));
+    state.trades = merged;
+    saveTrades(merged);
+    render();
+  }catch(e){ console.error("cloudPull failed:", e); }
+}
+
+async function cloudDeleteTrade(id){
+  if(!FIREBASE_READY || !fbUser) return;
+  try{ await fbDB.collection("users").doc(fbUser.uid).collection("trades").doc(id).delete(); }
+  catch(e){ console.error("cloudDeleteTrade failed:", e); }
+}
+
+async function signInWithGoogle(){
+  if(!FIREBASE_READY){ showToast(t("cloud_unavailable")); return; }
+  try{
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await fbAuth.signInWithPopup(provider);
+  }catch(e){
+    console.error("Google sign-in failed:", e);
+    showToast(t("signin_failed"));
+  }
+}
+async function signOutGoogle(){
+  try{ await fbAuth.signOut(); }catch(e){}
+}
+/* Fetch every user's aggregate profile — admin-only (Firestore rules
+   enforce this server-side too, this is just the client-side call). */
+async function fetchAllUsers(){
+  if(!FIREBASE_READY || !isAdmin()) return [];
+  try{
+    const snap = await fbDB.collection("users").orderBy("lastActive","desc").get();
+    return snap.docs.map(d=>({ uid:d.id, ...d.data() }));
+  }catch(e){ console.error("fetchAllUsers failed:", e); return []; }
+}
 const RESULTS=["Win","Loss","Break Even"];
 const CONCEPTS_DEFAULT=["Market Structure","BOS","CHoCH","Liquidity Sweep","Order Block","Fair Value Gap","Premium/Discount","OTE Entry"];
 
@@ -166,7 +268,7 @@ function getActiveEmotions(){ const c=loadActiveEmotions(); return c || []; }
 const LS_SHOW_NOTES="ictj_shownotes", LS_SHOW_SHOTS="ictj_showshots";
 function showNotes(){ return localStorage.getItem(LS_SHOW_NOTES)==="1"; }
 function setShowNotes(v){ localStorage.setItem(LS_SHOW_NOTES, v?"1":"0"); }
-function showShots(){ return localStorage.getItem(LS_SHOW_SHOTS)==="1"; }
+function showShots(){ const v=localStorage.getItem(LS_SHOW_SHOTS); return v===null ? true : v==="1"; }
 function setShowShots(v){ localStorage.setItem(LS_SHOW_SHOTS, v?"1":"0"); }
 const PHASES=["Phase 1","Phase 2","Funded"];
 const DOW=["Mo","Tu","We","Th","Fr","Sa","Su"];
@@ -176,6 +278,43 @@ const MONTHS_UZ=["Yanvar","Fevral","Mart","Aprel","May","Iyun","Iyul","Avgust","
 
 /* ---------------- language / i18n ---------------- */
 const LS_LANG="ictj_lang";
+
+/* ---------------- backup / restore (export & import everything as JSON) ----------------
+   Since all data lives only in this device's local storage, this is the
+   person's safety net against clearing the browser cache, switching phones,
+   or Telegram/iOS evicting storage after inactivity. */
+const BACKUP_KEYS = {
+  trades: "ictj_trades", prop: "ictj_prop", balance: "ictj_balance", real: "ictj_realaccount",
+  customConcepts: "ictj_customconcepts", customMistakes: "ictj_custommistakes",
+  activeEmotions: "ictj_activeemotions", showNotes: "ictj_shownotes", showShots: "ictj_showshots",
+  lang: "ictj_lang",
+};
+function buildBackupObject(){
+  const data={};
+  for(const [friendly, lsKey] of Object.entries(BACKUP_KEYS)){
+    const raw = localStorage.getItem(lsKey);
+    if(raw!==null) data[friendly]=raw;
+  }
+  return { app:"AlphaJournal", version:1, exportedAt:new Date().toISOString(), data };
+}
+function downloadBackupFile(json){
+  try{
+    const blob = new Blob([json], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=`alphajournal-backup-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    return true;
+  }catch(e){ return false; }
+}
+function restoreFromBackupObject(obj){
+  if(!obj || typeof obj!=="object" || !obj.data) return false;
+  for(const [friendly, lsKey] of Object.entries(BACKUP_KEYS)){
+    if(obj.data[friendly]!==undefined) localStorage.setItem(lsKey, obj.data[friendly]);
+  }
+  return true;
+}
 function loadLang(){ return localStorage.getItem(LS_LANG) || "uz"; }
 function saveLang(l){ localStorage.setItem(LS_LANG, l); }
 
@@ -233,6 +372,22 @@ const I18N = {
     settings_sections:"Bo'limlar", sections_sub:"Kerak bo'lmagan bo'limlarni yashirib, formani soddalashtiring.",
     sections_notes_label:"Izohlar bo'limi", sections_shots_label:"Skrinshotlar bo'limi",
     on_label:"Yoqilgan", off_label:"O'chirilgan",
+    settings_backup:"Zaxira",
+    backup_export_title:"Zaxira Nusxa Yaratish", backup_export_sub:"Barcha savdolaringiz, sozlamalaringiz va hisoblaringizni bitta faylga saqlab oling — telefon almashtirsangiz yoki kesh tozalansa ham ma'lumot yo'qolmaydi.",
+    backup_export_btn:"Zaxira faylini yuklab olish", backup_copy_btn:"Nusxa ko'chirish (Copy)",
+    backup_export_done:"Zaxira fayli yuklab olindi.", backup_export_fallback:"Fayl tayyor — pastdagi matnni nusxa oling.",
+    backup_copied:"Nusxa ko'chirildi!", backup_copy_manual:"Iltimos matnni qo'lda belgilab nusxa oling.",
+    backup_import_title:"Zaxiradan Tiklash", backup_import_sub:"Avval saqlangan zaxira faylini tanlang yoki matnini shu yerga joylashtiring.",
+    backup_import_placeholder:"Zaxira JSON matnini shu yerga joylashtiring...", backup_choose_file:"Fayl tanlash",
+    backup_restore_btn:"Tiklash", backup_restore_confirm:"Bu joriy barcha ma'lumotlaringizni zaxiradagi bilan almashtiradi. Davom etasizmi?",
+    backup_restore_done:"Tiklandi! Ilova qayta yuklanmoqda...", backup_import_empty:"Avval faylni tanlang yoki matnini joylashtiring.", backup_import_invalid:"Bu fayl to'g'ri zaxira fayli emas.",
+    nav_admin:"Admin", settings_account:"Hisobim",
+    google_signin_sub:"Google orqali kiring — savdolaringiz bulutga saqlanadi va boshqa qurilmadan ham kirib ko'rishingiz mumkin bo'ladi.",
+    google_signin_btn:"Google orqali kirish", google_signout_btn:"Chiqish",
+    admin_badge:"Admin", cloud_unavailable:"Bulut xizmati hozircha mavjud emas.", signin_failed:"Kirish amalga oshmadi. Qayta urinib ko'ring.",
+    admin_denied:"Bu bo'lim faqat admin uchun.", admin_loading:"Yuklanmoqda...",
+    admin_total_users:"Jami foydalanuvchi", admin_in_profit:"Plyusda", admin_in_loss:"Minusda",
+    admin_total_trades:"Jami savdolar", admin_no_users:"Hali hech kim ro'yxatdan o'tmagan.", admin_refresh:"Yangilash",
     err_read_image:"Rasmni o'qib bo'lmadi.", err_enter_pair:"Juftlik nomini kiriting.", err_storage_full:"Saqlab bo'lmadi — xotira to'lib qolgan bo'lishi mumkin. Bir skrinshotni o'chirib ko'ring.",
     days_short:"kun", streak_title:"Ketma-ketlik va Win Rate", streak_days:"Kunlar", streak_trades:"Savdolar",
     avg_win_loss_title:"O'rtacha Win / Loss ($)",
@@ -301,6 +456,22 @@ const I18N = {
     settings_sections:"Разделы", sections_sub:"Скройте ненужные разделы, чтобы упростить форму.",
     sections_notes_label:"Раздел заметок", sections_shots_label:"Раздел скриншотов",
     on_label:"Включено", off_label:"Выключено",
+    settings_backup:"Резервная копия",
+    backup_export_title:"Создать резервную копию", backup_export_sub:"Сохраните все свои сделки, настройки и счета в один файл — данные не потеряются при смене телефона или очистке кэша.",
+    backup_export_btn:"Скачать файл резервной копии", backup_copy_btn:"Скопировать текст",
+    backup_export_done:"Файл резервной копии скачан.", backup_export_fallback:"Файл готов — скопируйте текст ниже.",
+    backup_copied:"Скопировано!", backup_copy_manual:"Пожалуйста, выделите и скопируйте текст вручную.",
+    backup_import_title:"Восстановить из копии", backup_import_sub:"Выберите ранее сохранённый файл или вставьте его текст сюда.",
+    backup_import_placeholder:"Вставьте сюда текст JSON резервной копии...", backup_choose_file:"Выбрать файл",
+    backup_restore_btn:"Восстановить", backup_restore_confirm:"Это заменит все текущие данные данными из копии. Продолжить?",
+    backup_restore_done:"Восстановлено! Перезагрузка приложения...", backup_import_empty:"Сначала выберите файл или вставьте текст.", backup_import_invalid:"Это не похоже на корректный файл резервной копии.",
+    nav_admin:"Админ", settings_account:"Аккаунт",
+    google_signin_sub:"Войдите через Google — ваши сделки сохранятся в облаке, и вы сможете открыть их с другого устройства.",
+    google_signin_btn:"Войти через Google", google_signout_btn:"Выйти",
+    admin_badge:"Admin", cloud_unavailable:"Облачный сервис пока недоступен.", signin_failed:"Не удалось войти. Попробуйте снова.",
+    admin_denied:"Этот раздел только для администратора.", admin_loading:"Загрузка...",
+    admin_total_users:"Всего пользователей", admin_in_profit:"В плюсе", admin_in_loss:"В минусе",
+    admin_total_trades:"Всего сделок", admin_no_users:"Пока никто не зарегистрирован.", admin_refresh:"Обновить",
     err_read_image:"Не удалось прочитать изображение.", err_enter_pair:"Введите название пары.", err_storage_full:"Не удалось сохранить — возможно, хранилище переполнено. Попробуйте удалить один скриншот.",
     days_short:"дн", streak_title:"Серия и винрейт", streak_days:"Дни", streak_trades:"Сделки",
     avg_win_loss_title:"Средний Win / Loss ($)",
@@ -369,6 +540,22 @@ const I18N = {
     settings_sections:"Sections", sections_sub:"Hide sections you don't need to keep the form simple.",
     sections_notes_label:"Notes section", sections_shots_label:"Screenshots section",
     on_label:"On", off_label:"Off",
+    settings_backup:"Backup",
+    backup_export_title:"Create Backup", backup_export_sub:"Save all your trades, settings, and accounts into one file — nothing is lost if you switch phones or clear your cache.",
+    backup_export_btn:"Download backup file", backup_copy_btn:"Copy text",
+    backup_export_done:"Backup file downloaded.", backup_export_fallback:"File ready — copy the text below.",
+    backup_copied:"Copied!", backup_copy_manual:"Please select and copy the text manually.",
+    backup_import_title:"Restore from Backup", backup_import_sub:"Choose a previously saved file, or paste its text here.",
+    backup_import_placeholder:"Paste your backup JSON text here...", backup_choose_file:"Choose file",
+    backup_restore_btn:"Restore", backup_restore_confirm:"This will replace all your current data with the backup. Continue?",
+    backup_restore_done:"Restored! Reloading the app...", backup_import_empty:"Choose a file or paste text first.", backup_import_invalid:"This doesn't look like a valid backup file.",
+    nav_admin:"Admin", settings_account:"Account",
+    google_signin_sub:"Sign in with Google — your trades will be backed up to the cloud and follow you to any device.",
+    google_signin_btn:"Sign in with Google", google_signout_btn:"Sign out",
+    admin_badge:"Admin", cloud_unavailable:"Cloud service is not available right now.", signin_failed:"Sign-in failed. Please try again.",
+    admin_denied:"This section is admin-only.", admin_loading:"Loading...",
+    admin_total_users:"Total Users", admin_in_profit:"In Profit", admin_in_loss:"In Loss",
+    admin_total_trades:"Total Trades", admin_no_users:"No one has signed up yet.", admin_refresh:"Refresh",
     err_read_image:"Couldn't read that image.", err_enter_pair:"Enter a pair symbol.", err_storage_full:"Couldn't save — storage might be full. Try removing a screenshot.",
     days_short:"d", streak_title:"Streak & Win Rate", streak_days:"Days", streak_trades:"Trades",
     avg_win_loss_title:"Avg Win / Loss ($)",
@@ -424,6 +611,58 @@ let curResult = "Win";
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 function fmtMoney(n){ n=Number(n)||0; const s="$"+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); return (n>=0?"+":"-")+s; }
 function esc(s){ return (s||"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ---------------- custom dialogs ----------------
+   Native alert()/confirm()/prompt() are unreliable inside Telegram's
+   Mini App WebView (they can be silently suppressed), which is why
+   "Save" buttons could look broken even though the data was saved.
+   These replacements work everywhere, including in Telegram. */
+function showToast(msg){
+  const el=document.createElement("div");
+  el.textContent=msg;
+  el.style.cssText="position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:#1C212E; color:#EAECEF; border:1px solid #262C3A; border-radius:10px; padding:11px 18px; font-size:13px; z-index:3000; max-width:88%; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,.5);";
+  document.body.appendChild(el);
+  setTimeout(()=>{ el.style.transition="opacity .3s"; el.style.opacity="0"; setTimeout(()=>el.remove(),300); }, 2400);
+}
+function showConfirm(message){
+  return new Promise(resolve=>{
+    const overlay=document.createElement("div");
+    overlay.style.cssText="position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:3000; display:flex; align-items:center; justify-content:center; padding:24px;";
+    overlay.innerHTML=`
+      <div style="background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px; max-width:320px; width:100%;">
+        <div style="font-size:14px; color:var(--text); margin-bottom:16px; line-height:1.4;">${esc(message)}</div>
+        <div style="display:flex; gap:8px;">
+          <button id="cf-cancel" style="flex:1; padding:10px; border-radius:8px; border:1px solid var(--border-l); background:var(--surface2); color:var(--text-mid); font-size:13px;">${esc(t("del_cancel"))}</button>
+          <button id="cf-ok" style="flex:1; padding:10px; border-radius:8px; border:none; background:var(--red); color:#fff; font-size:13px; font-weight:600;">${esc(t("del_confirm"))}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector("#cf-cancel").addEventListener("click",()=>{ overlay.remove(); resolve(false); });
+    overlay.querySelector("#cf-ok").addEventListener("click",()=>{ overlay.remove(); resolve(true); });
+  });
+}
+function showPrompt(message, defaultValue){
+  return new Promise(resolve=>{
+    const overlay=document.createElement("div");
+    overlay.style.cssText="position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:3000; display:flex; align-items:center; justify-content:center; padding:24px;";
+    overlay.innerHTML=`
+      <div style="background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px; max-width:320px; width:100%;">
+        <div style="font-size:14px; color:var(--text); margin-bottom:12px; line-height:1.4;">${esc(message)}</div>
+        <input id="pr-input" value="${esc(defaultValue||"")}" style="width:100%; background:var(--surface2); border:1px solid var(--border-l); border-radius:8px; padding:10px; color:var(--text); font-family:'SF Mono',monospace; font-size:14px; margin-bottom:14px; box-sizing:border-box;">
+        <div style="display:flex; gap:8px;">
+          <button id="pr-cancel" style="flex:1; padding:10px; border-radius:8px; border:1px solid var(--border-l); background:var(--surface2); color:var(--text-mid); font-size:13px;">${esc(t("cancel"))}</button>
+          <button id="pr-ok" style="flex:1; padding:10px; border-radius:8px; border:none; background:var(--gold); color:var(--bg); font-size:13px; font-weight:600;">${esc(t("save"))}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input=overlay.querySelector("#pr-input");
+    setTimeout(()=>{ input.focus(); input.select(); },50);
+    const finish=(val)=>{ overlay.remove(); resolve(val); };
+    overlay.querySelector("#pr-cancel").addEventListener("click",()=>finish(null));
+    overlay.querySelector("#pr-ok").addEventListener("click",()=>finish(input.value));
+    input.addEventListener("keydown",e=>{ if(e.key==="Enter") finish(input.value); });
+  });
+}
 
 /* ---------------- CSV / MT5 import ----------------
    Parses a generic CSV export (from MT5's History > Report > Save as CSV,
@@ -654,6 +893,7 @@ function compressImage(file, maxWidth=900, quality=0.6){
 
 /* ---------------- icons ---------------- */
 const ICONS = {
+  admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5z"/><path d="M9 12l2 2 4-4"/></svg>',
   upload:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
   dash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
   book:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
@@ -680,9 +920,11 @@ function render(){
   else if(state.tab==="journal"){ mainHtml = renderJournal(); }
   else if(state.tab==="accounts"){ mainHtml = renderAccounts(); }
   else if(state.tab==="terms"){ mainHtml = renderTerms(); }
+  else if(state.tab==="admin"){ mainHtml = renderAdminPanel(); }
   el.innerHTML = renderLangSwitcher() + mainHtml + renderNav();
   attachGlobalHandlers();
   if(state.view==="form") afterFormRender();
+  if(state.tab==="admin" && isAdmin()) loadAdminUsersIfNeeded();
 }
 
 /* ---- language switcher (always visible) ---- */
@@ -1242,6 +1484,63 @@ function saveReal(r){ localStorage.setItem(LS_REAL, JSON.stringify(r)); }
 if(!state.accountMode) state.accountMode = "real";
 if(!state.real) state.real = loadReal();
 
+/* ---- Admin Panel (visible only to ADMIN_EMAIL) ---- */
+async function loadAdminUsersIfNeeded(){
+  if(state.adminUsers || state.adminLoading) return;
+  state.adminLoading = true;
+  render();
+  const users = await fetchAllUsers();
+  state.adminUsers = users;
+  state.adminLoading = false;
+  render();
+}
+function renderAdminPanel(){
+  if(!isAdmin()){
+    return `<div class="empty-state">${t("admin_denied")}</div>`;
+  }
+  if(state.adminLoading || !state.adminUsers){
+    return `<div style="padding:60px 0; text-align:center; color:var(--text-mid);">${t("admin_loading")}</div>`;
+  }
+  const users = state.adminUsers;
+  const total = users.length;
+  const inProfit = users.filter(u=>(u.netPnl||0)>0).length;
+  const inLoss = users.filter(u=>(u.netPnl||0)<0).length;
+  const totalTrades = users.reduce((s,u)=>s+(u.tradeCount||0),0);
+  const rows = [...users].sort((a,b)=>(b.netPnl||0)-(a.netPnl||0)).map(u=>{
+    const pnl = u.netPnl||0;
+    const color = pnl>0?"var(--green)":pnl<0?"var(--red)":"var(--text-mid)";
+    const lastActive = u.lastActive && u.lastActive.toDate ? u.lastActive.toDate() : null;
+    return `<div class="trade-card" style="margin-bottom:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
+          ${u.photoURL?`<img src="${u.photoURL}" style="width:32px;height:32px;border-radius:50%;">`:`<div style="width:32px;height:32px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-mid);">${esc((u.displayName||u.email||"?")[0].toUpperCase())}</div>`}
+          <div style="min-width:0;">
+            <div style="font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(u.displayName||u.email||u.uid)}</div>
+            <div class="sub" style="margin:0; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(u.email||"")} ${u.email===ADMIN_EMAIL?" · "+t("admin_badge"):""}</div>
+          </div>
+        </div>
+        <div style="text-align:right; white-space:nowrap;">
+          <div class="mono" style="font-weight:700; font-size:13px; color:${color};">${fmtMoney(pnl)}</div>
+          <div class="sub" style="margin:0; font-size:9.5px;">${u.tradeCount||0} · ${lastActive?lastActive.toLocaleDateString():"—"}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h1 class="disp">${t("nav_admin")}</h1>
+      <button type="button" id="admin-refresh-btn" style="background:none;border:1px solid var(--border-l);color:var(--text-mid);border-radius:8px;padding:6px 10px;font-size:11px;">${t("admin_refresh")}</button>
+    </div>
+    <div class="grid3" style="margin-bottom:14px;">
+      <div class="stat-mini"><div class="lbl">${t("admin_total_users")}</div><div class="v">${total}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("admin_in_profit")}</div><div class="v" style="color:var(--green)">${inProfit}</div></div>
+      <div class="stat-mini"><div class="lbl">${t("admin_in_loss")}</div><div class="v" style="color:var(--red)">${inLoss}</div></div>
+    </div>
+    <div class="stat-mini" style="margin-bottom:16px;"><div class="lbl">${t("admin_total_trades")}</div><div class="v">${totalTrades}</div></div>
+    ${total===0? `<div class="empty-state">${t("admin_no_users")}</div>` : rows}
+  </div>`;
+}
+
 function renderAccounts(){
   const modeSwitch = `
     <div class="toggle2" style="margin-bottom:16px;">
@@ -1360,6 +1659,7 @@ function renderNav(){
     ${item("journal",ICONS.book,t("nav_journal"))}
     ${item("accounts",ICONS.shield,t("nav_accounts"))}
     ${item("terms",ICONS.book2,t("nav_terms"))}
+    ${isAdmin()?item("admin",ICONS.admin,t("nav_admin")):""}
   </nav>`;
 }
 
@@ -1368,7 +1668,7 @@ function renderNav(){
 if(!state.settingsSubTab) state.settingsSubTab = "ict";
 
 function renderTerms(){
-  const tabs=[["ict","settings_ict"],["psych","settings_psych"],["gallery","settings_gallery"],["sections","settings_sections"]];
+  const tabs=[["ict","settings_ict"],["psych","settings_psych"],["gallery","settings_gallery"],["sections","settings_sections"],["backup","settings_backup"],["account","settings_account"]];
   const subSwitch = `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:16px;">
       ${tabs.map(([id,key])=>`<button type="button" data-settingstab="${id}" style="border-radius:7px; padding:9px; font-size:12.5px; font-family:'SF Mono',monospace; border:1px solid var(--border-l); background:${state.settingsSubTab===id?'rgba(63,182,139,.1)':'var(--surface2)'}; border-color:${state.settingsSubTab===id?'rgba(63,182,139,.5)':'var(--border-l)'}; color:${state.settingsSubTab===id?'var(--green)':'var(--text-dim)'};">${t(key)}</button>`).join("")}
@@ -1377,11 +1677,57 @@ function renderTerms(){
   if(state.settingsSubTab==="ict") body=renderIctSettings();
   else if(state.settingsSubTab==="psych") body=renderPsychSettings();
   else if(state.settingsSubTab==="sections") body=renderSectionsSettings();
+  else if(state.settingsSubTab==="backup") body=renderBackupSettings();
+  else if(state.settingsSubTab==="account") body=renderAccountSettings();
   else body=renderGallery();
   return `<div>
     <h1 class="disp">${t("nav_terms")}</h1>
     ${subSwitch}
     ${body}
+  </div>`;
+}
+
+function renderAccountSettings(){
+  if(!FIREBASE_READY){
+    return `<div class="card"><p class="sub" style="margin:0;">${t("cloud_unavailable")}</p></div>`;
+  }
+  if(!fbUser){
+    return `<div class="card" style="text-align:center; padding:24px 16px;">
+      <div style="font-size:13px; color:var(--text-mid); margin-bottom:16px; line-height:1.5;">${t("google_signin_sub")}</div>
+      <button class="btn-primary" id="google-signin-btn" style="display:inline-flex; align-items:center; justify-content:center; gap:8px; width:100%;">
+        <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/><path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24s.85 6.91 2.34 9.88l7.35-5.7z"/><path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"/></svg>
+        ${t("google_signin_btn")}
+      </button>
+    </div>`;
+  }
+  return `<div class="card" style="text-align:center; padding:20px 16px;">
+    ${fbUser.photoURL?`<img src="${fbUser.photoURL}" style="width:56px; height:56px; border-radius:50%; margin-bottom:10px;">`:""}
+    <div style="font-weight:600; font-size:14px;">${esc(fbUser.displayName||"")}</div>
+    <div class="sub" style="margin:2px 0 16px;">${esc(fbUser.email||"")}</div>
+    ${isAdmin()?`<div class="badge gold" style="margin-bottom:14px;">${t("admin_badge")}</div>`:""}
+    <button class="btn-ghost" id="google-signout-btn" style="width:100%;">${t("google_signout_btn")}</button>
+  </div>`;
+}
+
+function renderBackupSettings(){
+  return `<div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="section-lbl">${t("backup_export_title")}</div>
+      <p class="sub" style="margin:-2px 0 12px;">${t("backup_export_sub")}</p>
+      <button class="btn-primary" id="backup-export-btn" style="margin-bottom:10px;">${t("backup_export_btn")}</button>
+      <textarea id="backup-export-text" readonly rows="4" style="font-size:9.5px; margin-bottom:8px; display:none; font-family:'SF Mono',monospace;"></textarea>
+      <button class="btn-ghost" id="backup-copy-btn" style="width:100%; display:none;">${t("backup_copy_btn")}</button>
+    </div>
+    <div class="card">
+      <div class="section-lbl">${t("backup_import_title")}</div>
+      <p class="sub" style="margin:-2px 0 12px;">${t("backup_import_sub")}</p>
+      <textarea id="backup-import-text" rows="4" placeholder="${t("backup_import_placeholder")}" style="font-size:9.5px; margin-bottom:10px; font-family:'SF Mono',monospace;"></textarea>
+      <div class="row">
+        <button class="btn-ghost" style="flex:1;" id="backup-import-file-btn">${t("backup_choose_file")}</button>
+        <input type="file" id="backup-import-file" accept=".json,application/json" style="display:none;">
+      </div>
+      <button class="btn-primary" id="backup-restore-btn" style="margin-top:10px;">${t("backup_restore_btn")}</button>
+    </div>
   </div>`;
 }
 
@@ -1524,8 +1870,8 @@ function afterFormRender(){
   };
   document.querySelectorAll("#f-emotion [data-emotion]").forEach(btn=>btn.addEventListener("click",()=>selectEmotionChip(btn)));
   const addEmotionBtn=document.getElementById("add-emotion-btn");
-  if(addEmotionBtn) addEmotionBtn.addEventListener("click",()=>{
-    const val=prompt(t("prompt_new_term"));
+  if(addEmotionBtn) addEmotionBtn.addEventListener("click", async ()=>{
+    const val=await showPrompt(t("prompt_new_term"));
     if(!val||!val.trim()) return;
     const term=val.trim();
     const container=document.getElementById("f-emotion");
@@ -1566,8 +1912,8 @@ function afterFormRender(){
     else{curConcepts.add(c); btn.classList.add("active-gold");}
   }));
   const addConceptBtn=document.getElementById("add-concept-btn");
-  if(addConceptBtn) addConceptBtn.addEventListener("click",()=>{
-    const val=prompt(t("prompt_new_term"));
+  if(addConceptBtn) addConceptBtn.addEventListener("click", async ()=>{
+    const val=await showPrompt(t("prompt_new_term"));
     if(!val||!val.trim()) return;
     const term=val.trim();
     const container=document.getElementById("f-concepts");
@@ -1594,8 +1940,8 @@ function afterFormRender(){
     else{curMistakes.add(m); btn.classList.add("active-red");}
   }));
   const addMistakeBtn=document.getElementById("add-mistake-btn");
-  if(addMistakeBtn) addMistakeBtn.addEventListener("click",()=>{
-    const val=prompt(t("prompt_new_mistake"));
+  if(addMistakeBtn) addMistakeBtn.addEventListener("click", async ()=>{
+    const val=await showPrompt(t("prompt_new_mistake"));
     if(!val||!val.trim()) return;
     const term=val.trim();
     const container=document.getElementById("f-mistakes");
@@ -1629,7 +1975,7 @@ function afterFormRender(){
         if(which==="before") beforeImg=b64; else afterImg=b64;
         drop.innerHTML=`<img src="${b64}"><button type="button" class="rm" data-rmimg="${which}">${ICONS.x}</button>`;
         drop.querySelector("[data-rmimg]").addEventListener("click",(e)=>{ e.stopPropagation(); if(which==="before"){beforeImg=null;} else {afterImg=null;} drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`; });
-      }catch(err){ alert(t("err_read_image")); drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`; }
+      }catch(err){ showToast(t("err_read_image")); drop.innerHTML=`<div style="color:var(--text-faint); display:flex; flex-direction:column; align-items:center; gap:4px;">${ICONS.cam}<span style="font-size:10px;">${t2("upload")}</span></div>`; }
     });
   }
   wireDrop("drop-before","file-before","before");
@@ -1673,7 +2019,7 @@ function afterFormRender(){
   document.getElementById("save-trade-btn").addEventListener("click",()=>{
     const draft=snapshotDraft();
     const pair=(draft.pair||"").trim();
-    if(!pair){ alert(t("err_enter_pair")); return; }
+    if(!pair){ showToast(t("err_enter_pair")); return; }
     const trade={
       id: draft.id || uid(),
       pair: pair.toUpperCase(),
@@ -1700,9 +2046,10 @@ function afterFormRender(){
     const exists=state.trades.some(t=>t.id===trade.id);
     const next = exists? state.trades.map(t=>t.id===trade.id?trade:t) : [trade,...state.trades];
     next.sort((a,b)=>new Date(b.datetime)-new Date(a.datetime));
-    if(!saveTrades(next)){ alert(t("err_storage_full")); return; }
+    if(!saveTrades(next)){ showToast(t("err_storage_full")); return; }
     state.trades=next; state.activeId=trade.id; state.view="detail"; state.tab="journal"; state.draft=null;
     render();
+    cloudSync();
   });
 
   // reveal Notes / Screenshots sections in place, without losing what's already typed
@@ -1730,7 +2077,7 @@ function attachGlobalHandlers(){
       const reader=new FileReader();
       reader.onload=(e)=>{
         const { headers, rows } = parseCSV(e.target.result);
-        if(headers.length===0 || rows.length===0){ alert(t("import_no_data")); return; }
+        if(headers.length===0 || rows.length===0){ showToast(t("import_no_data")); return; }
         state.importData = { headers, rows, mapping: autoMapMT5(headers) };
         state.view="import";
         render();
@@ -1795,7 +2142,8 @@ function attachGlobalHandlers(){
     state.trades = imported>0 ? merged : state.trades;
     state.importData=null; state.view="list"; state.tab="journal";
     render();
-    alert(t("import_success")(imported, skipped));
+    showToast(t("import_success")(imported, skipped));
+    if(imported>0) cloudSync();
   });
 
   const fab=document.getElementById("fab-add");
@@ -1804,13 +2152,14 @@ function attachGlobalHandlers(){
     if(e.target.closest("[data-deltrade]")) return;
     state.activeId=c.dataset.opentrade; state.view="detail"; render();
   }));
-  document.querySelectorAll("[data-deltrade]").forEach(b=>b.addEventListener("click",(e)=>{
+  document.querySelectorAll("[data-deltrade]").forEach(b=>b.addEventListener("click", async (e)=>{
     e.stopPropagation();
-    if(!confirm(t("del_msg"))) return;
+    if(!(await showConfirm(t("del_msg")))) return;
     const id=b.dataset.deltrade;
     state.trades=state.trades.filter(t=>t.id!==id); saveTrades(state.trades);
     if(state.activeId===id){ state.activeId=null; state.view="list"; }
     render();
+    cloudDeleteTrade(id);
   }));
   document.querySelectorAll("[data-edittrade]").forEach(b=>b.addEventListener("click",()=>{
     state.draft=state.trades.find(t=>t.id===b.dataset.edittrade); state.view="form"; render();
@@ -1838,12 +2187,12 @@ function attachGlobalHandlers(){
   }));
   document.querySelectorAll("[data-clearcombo]").forEach(c=>c.addEventListener("click",()=>{ state.comboFilter=null; render(); }));
   const editBal=document.querySelector("[data-editbalance]");
-  if(editBal) editBal.addEventListener("click",()=>{
+  if(editBal) editBal.addEventListener("click", async ()=>{
     if(state.real && state.real.deposit>0){
-      const v=prompt("Real hisobingiz depozitini o'zgartirish (kalendar % shundan hisoblanadi):", state.real.deposit);
+      const v=await showPrompt(t("edit_balance_prompt_real"), state.real.deposit);
       if(v!==null && !isNaN(parseFloat(v))){ state.real.deposit=parseFloat(v); saveReal(state.real); render(); }
     } else {
-      const v=prompt("Set your account balance (used for daily % calculation):", state.balance);
+      const v=await showPrompt(t("edit_balance_prompt"), state.balance);
       if(v!==null && !isNaN(parseFloat(v))){ state.balance=parseFloat(v); saveBalance(state.balance); render(); }
     }
   });
@@ -1912,7 +2261,7 @@ function attachGlobalHandlers(){
     const saveTermsBtn=document.getElementById("terms-save-btn");
     if(saveTermsBtn) saveTermsBtn.addEventListener("click",()=>{
       saveCustomConcepts([...selected]);
-      alert(t("terms_saved"));
+      showToast(t("terms_saved"));
     });
   }
 
@@ -1921,6 +2270,17 @@ function attachGlobalHandlers(){
     state.settingsSubTab=b.dataset.settingstab; render();
   }));
 
+  const googleSigninBtn=document.getElementById("google-signin-btn");
+  if(googleSigninBtn) googleSigninBtn.addEventListener("click", signInWithGoogle);
+  const googleSignoutBtn=document.getElementById("google-signout-btn");
+  if(googleSignoutBtn) googleSignoutBtn.addEventListener("click", signOutGoogle);
+
+  const adminRefreshBtn=document.getElementById("admin-refresh-btn");
+  if(adminRefreshBtn) adminRefreshBtn.addEventListener("click", async ()=>{
+    state.adminUsers=null;
+    await loadAdminUsersIfNeeded();
+  });
+
   // section on/off toggles (Notes, Screenshots)
   document.querySelectorAll("[data-sectiontoggle]").forEach(b=>b.addEventListener("click",()=>{
     const key=b.dataset.sectiontoggle;
@@ -1928,6 +2288,60 @@ function attachGlobalHandlers(){
     if(key==="shots") setShowShots(!showShots());
     render();
   }));
+
+  // backup / restore
+  const exportBtn=document.getElementById("backup-export-btn");
+  if(exportBtn) exportBtn.addEventListener("click",()=>{
+    const obj=buildBackupObject();
+    const json=JSON.stringify(obj,null,2);
+    const downloaded=downloadBackupFile(json);
+    const textArea=document.getElementById("backup-export-text");
+    const copyBtn=document.getElementById("backup-copy-btn");
+    if(textArea){ textArea.value=json; textArea.style.display="block"; }
+    if(copyBtn) copyBtn.style.display="block";
+    showToast(downloaded ? t("backup_export_done") : t("backup_export_fallback"));
+  });
+  const copyBtn=document.getElementById("backup-copy-btn");
+  if(copyBtn) copyBtn.addEventListener("click", async ()=>{
+    const textArea=document.getElementById("backup-export-text");
+    if(!textArea) return;
+    try{
+      await navigator.clipboard.writeText(textArea.value);
+      showToast(t("backup_copied"));
+    }catch(e){
+      textArea.focus(); textArea.select();
+      try{ document.execCommand("copy"); showToast(t("backup_copied")); }
+      catch(e2){ showToast(t("backup_copy_manual")); }
+    }
+  });
+  const importFileBtn=document.getElementById("backup-import-file-btn");
+  const importFileInput=document.getElementById("backup-import-file");
+  if(importFileBtn && importFileInput){
+    importFileBtn.addEventListener("click",()=>importFileInput.click());
+    importFileInput.addEventListener("change",()=>{
+      const f=importFileInput.files[0]; if(!f) return;
+      const reader=new FileReader();
+      reader.onload=(e)=>{ const ta=document.getElementById("backup-import-text"); if(ta) ta.value=e.target.result; };
+      reader.readAsText(f);
+    });
+  }
+  const restoreBtn=document.getElementById("backup-restore-btn");
+  if(restoreBtn) restoreBtn.addEventListener("click", async ()=>{
+    const ta=document.getElementById("backup-import-text");
+    const raw=ta ? ta.value.trim() : "";
+    if(!raw){ showToast(t("backup_import_empty")); return; }
+    let obj;
+    try{ obj=JSON.parse(raw); }catch(e){ showToast(t("backup_import_invalid")); return; }
+    if(!obj || !obj.data){ showToast(t("backup_import_invalid")); return; }
+    if(!(await showConfirm(t("backup_restore_confirm")))) return;
+    const ok=restoreFromBackupObject(obj);
+    if(ok){
+      showToast(t("backup_restore_done"));
+      setTimeout(()=>location.reload(), 900);
+    } else {
+      showToast(t("backup_import_invalid"));
+    }
+  });
 
   // psychology picker (emotions + mistakes)
   const psychEmotions=document.getElementById("psych-emotions");
@@ -1949,7 +2363,7 @@ function attachGlobalHandlers(){
     if(psychSaveBtn) psychSaveBtn.addEventListener("click",()=>{
       saveActiveEmotions([...selEmotions]);
       saveCustomMistakes([...selMistakes]);
-      alert(t("psych_saved"));
+      showToast(t("psych_saved"));
     });
   }
 
@@ -1968,6 +2382,15 @@ function attachGlobalHandlers(){
 /* ---------------- telegram integration ---------------- */
 if(window.Telegram && window.Telegram.WebApp){
   try{ Telegram.WebApp.ready(); Telegram.WebApp.expand(); }catch(e){}
+}
+
+/* ---------------- auth bootstrap ---------------- */
+if(FIREBASE_READY){
+  fbAuth.onAuthStateChanged(async (user)=>{
+    fbUser = user;
+    if(user){ await cloudPull(); await cloudSync(); }
+    render();
+  });
 }
 
 render();
