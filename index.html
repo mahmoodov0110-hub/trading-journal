@@ -165,7 +165,12 @@ async function signInWithGoogle(){
   if(!FIREBASE_READY){ showToast(t("cloud_unavailable")); return; }
   try{
     const provider = new firebase.auth.GoogleAuthProvider();
-    await fbAuth.signInWithPopup(provider);
+    // signInWithPopup breaks in standalone/home-screen PWAs (iOS strips the
+    // popup's window.opener) and in most in-app WebViews (Telegram etc).
+    // signInWithRedirect works everywhere — it's a full-page navigation
+    // instead of a popup, and the result is picked up by getRedirectResult()
+    // (called at boot) once the browser comes back to this page.
+    await fbAuth.signInWithRedirect(provider);
   }catch(e){
     console.error("Google sign-in failed:", e);
     showToast(t("signin_failed"));
@@ -2390,6 +2395,12 @@ if(FIREBASE_READY){
     fbUser = user;
     if(user){ await cloudPull(); await cloudSync(); }
     render();
+  });
+  // completes the signInWithRedirect() flow — if the person just came back
+  // from Google's sign-in page, this resolves (or reports) that result.
+  fbAuth.getRedirectResult().catch(e=>{
+    console.error("getRedirectResult error:", e);
+    showToast(t("signin_failed"));
   });
 }
 
