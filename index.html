@@ -173,7 +173,7 @@ async function signInWithGoogle(){
     await fbAuth.signInWithRedirect(provider);
   }catch(e){
     console.error("Google sign-in failed:", e);
-    showToast(t("signin_failed"));
+    showToast(`${t("signin_failed")} (${e.code||e.message||"unknown"})`);
   }
 }
 async function signOutGoogle(){
@@ -2400,7 +2400,7 @@ if(FIREBASE_READY){
   // from Google's sign-in page, this resolves (or reports) that result.
   fbAuth.getRedirectResult().catch(e=>{
     console.error("getRedirectResult error:", e);
-    showToast(t("signin_failed"));
+    showToast(`${t("signin_failed")} (${e.code||e.message||"unknown"})`);
   });
 }
 
